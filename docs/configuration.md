@@ -854,18 +854,21 @@ Promotion keeps the scout's running process and is not refused, so a Claude scou
 
 - Writes succeed only in the worker's own worktree, the project clone's shared git data, Claude's private temp directory, and the task records the brief tells it to write: `state/<id>.status` (append), `state/<id>.inbox` with its `handled/` moves, `data/<id>`, the per-task temp root `/tmp/fm-<id>`, and the worker's own Go caches in `state/<id>.gocache`.
   Because every worker runs in a linked worktree, Claude's sandbox also leaves the project clone's shared `.git` writable: every branch ref, the object store, and other tasks' `worktrees/` entries, with only its `hooks/` and `config` denied.
-  The fence therefore protects everything outside the project clone, but not the clone's shared git data.
+  The fence therefore protects everything outside the project clone, but not the clone's shared git data, and not the repository git hooks an excluded `git push` fires (supported limits below).
   Every other write fails with `Read-only file system`, including in the shared directories the launch grants for reading, `state/operational-inbox` and the code root's `.agents/skills`, which the sandbox's `denyWrite` keeps read-only because other tasks and unfenced sessions load them.
 - Unix-socket connections fail with `Operation not permitted`, so the worker cannot reach Herdr, tmux, Docker, or desktop services behind D-Bus.
 - Network egress is limited to the Go module proxy and checksum database, and any other host is refused rather than prompted, so an unattended pane never parks on a network question.
 - `GOTMPDIR` lives in the per-task temp root, and `GOCACHE` and `GOMODCACHE` in the task's own disk-backed `state/<id>.gocache` (`build/` and `mod/`), so Go builds work inside the fence without filling a memory-backed `/tmp`; each sandboxed task starts with cold caches, and cleanup removes both, read-only module trees included.
 - `git push`, `gh`, `gh-axi`, and `no-mistakes` run outside the fence, reviewed by auto mode's classifier, because they need the captain's GitHub login in the desktop keyring and the no-mistakes daemon socket.
-  Because the `--settings` JSON turns unsandboxed commands off, Claude ignores command exclusions from the worktree's own project settings, so a worker cannot add to that list from its worktree.
+- The launch also passes `--setting-sources user,local`, so the worktree's tracked `.claude/settings.json` never loads: its hooks, which Claude Code would run outside the sandbox on scripts the worker can edit inside it, never run, and its sandbox and permission keys cannot widen the fence.
+  Firstmate's own worker hooks live in the untracked `.claude/settings.local.json` and still load, and the launch's `--settings` JSON always applies.
 - If the sandbox cannot start, the worker exits at startup instead of running unfenced.
 
 Supported limits:
 
 - The fence covers Bash commands only; auto mode's classifier reviews Claude's built-in file tools instead.
+- Repository git hooks still run outside the fence when an excluded `git push` fires them: a `pre-push` hook, such as `.husky/pre-push` under a project's `core.hooksPath`, is worktree code the worker can edit inside the fence, and auto mode's classifier sees only the push command.
+- Claude Code ties the project's `CLAUDE.md`, `.claude/rules`, `.claude/skills`, and `.claude/agents` to the project setting source the launch drops, so a sandboxed worker does not load them automatically.
 - The status command's optional fleet-ledger append cannot write inside the fence and is skipped; the watcher's per-poll capture records the same status line.
 - Anything else that needs a socket, the keyring, or another host, such as `git fetch`, browser automation, Lavish, or a tmux-driven test suite, fails inside the fence and is left to the no-mistakes pipeline or to Firstmate; a Gerrit ship and a `--herdr-lab` ship or scout are refused at spawn instead (above).
 - Claude's protected paths (`.claude/skills` and the other `.claude/*` entries, `.mcp.json`, `.vscode`, and `.idea`) are read-only to sandboxed Bash even inside the worktree; in a firstmate worktree that covers `.agents/skills` through the tracked `.claude/skills` symlink.

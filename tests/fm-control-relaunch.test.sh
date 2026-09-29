@@ -390,6 +390,34 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   pass "fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree"
 }
 
+# config/claude-sandbox (bin/fm-spawn.sh header) is re-read on every relaunch:
+# a sandboxed replacement claude drops the worktree's tracked project settings
+# source together with the fence, while an unsandboxed one keeps every source.
+test_sandboxed_relaunch_drops_the_project_setting_source() {
+  local sandbox dir id out rc
+  for sandbox in on off; do
+    id="rl-sandbox-$sandbox"
+    dir=$(new_case "sandbox-$sandbox" "$id")
+    add_ship_task "$dir" "$id" claude
+    mkdir -p "$dir/home/config"
+    printf 'auto\n' > "$dir/home/config/claude-permission-mode"
+    printf '%s\n' "$sandbox" > "$dir/home/config/claude-sandbox"
+    out=$(run_control "$dir" "$id" relaunch --note "resuming with claude-sandbox=$sandbox"); rc=$?
+    expect_code 0 "$rc" "a claude relaunch with claude-sandbox=$sandbox should succeed"$'\n'"$out"
+    assert_grep "claude --permission-mode auto " "$dir/fake/literal" \
+      "the claude-sandbox=$sandbox relaunch did not launch a replacement claude"
+    if [ "$sandbox" = on ]; then
+      assert_grep "' --setting-sources user,local --settings '" "$dir/fake/literal" \
+        "a sandboxed relaunch did not drop the worktree's project setting source"
+      assert_grep '"sandbox":{' "$dir/fake/literal" "a sandboxed relaunch lost the fence"
+    else
+      assert_no_grep "--setting-sources" "$dir/fake/literal" \
+        "an unsandboxed relaunch dropped a setting source"
+    fi
+  done
+  pass "fm-control relaunch: a sandboxed claude relaunch drops the project setting source, an unsandboxed one keeps it"
+}
+
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text() {
   local dir out rc
   dir=$(new_case pending-exit rl43)
@@ -2387,6 +2415,7 @@ test_relaunch_moves_a_drifted_item_back_in_flight() {
 }
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
+test_sandboxed_relaunch_drops_the_project_setting_source
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text
 test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven
 test_relaunch_from_linked_home_preserves_recorded_worktree

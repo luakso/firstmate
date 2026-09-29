@@ -1881,6 +1881,8 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
     assert_contains "$launch" "export GOCACHE='$state_real/$id.gocache/build' GOMODCACHE='$state_real/$id.gocache/mod'; " \
       "claude $kind launch did not move the Go caches into the task's own disk-backed cache directory"
     assert_contains "$launch" "claude --permission-mode auto " "the sandboxed launch must run under auto mode"
+    assert_contains "$launch" "' --setting-sources user,local --settings '" \
+      "claude $kind launch did not drop the worktree's project setting source"
     [ -f "$HOME_DIR/state/$id.status" ] || fail "claude $kind spawn did not create the status log its sandbox grant covers"
     [ ! -s "$HOME_DIR/state/$id.status" ] || fail "claude $kind spawn wrote into the status log"
     [ -d "$HOME_DIR/state/$id.inbox/handled" ] || fail "claude $kind spawn did not create the granted inbox"
@@ -1965,6 +1967,7 @@ test_claude_sandbox_leaves_other_launches_unfenced() {
   assert_contains "$launch" "codex " "codex launch did not run codex"
   assert_not_contains "$launch" '"sandbox"' "the claude sandbox must not leak into a codex launch"
   assert_not_contains "$launch" "GOMODCACHE" "a codex launch must keep the shared Go caches"
+  assert_not_contains "$launch" "--setting-sources" "a codex launch must not carry claude's setting sources"
 
   id=sandbox-secondmate-z29
   rec=$(make_spawn_case sandbox-secondmate claude "$id")
@@ -1980,6 +1983,7 @@ test_claude_sandbox_leaves_other_launches_unfenced() {
   assert_contains "$launch" "claude --permission-mode auto " "secondmate launch did not run claude"
   assert_not_contains "$launch" '"sandbox"' "a claude secondmate must launch unfenced"
   assert_not_contains "$launch" "GOMODCACHE" "a claude secondmate must keep the shared Go caches"
+  assert_not_contains "$launch" "--setting-sources" "a claude secondmate must keep every setting source"
   pass "config/claude-sandbox fences claude crewmates and scouts only"
 }
 
