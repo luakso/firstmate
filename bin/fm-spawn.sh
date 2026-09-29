@@ -328,7 +328,9 @@
 #   any endpoint or worktree exists: the commands the fence exempts and Claude's
 #   file tools are reviewed only by auto mode's classifier. A forge=gerrit ship
 #   on a sandboxed Claude launch refuses too, because its worker must itself
-#   fetch from and publish to the Gerrit host, which the fence cannot reach.
+#   fetch from and publish to the Gerrit host, which the fence cannot reach, and
+#   so does a sandboxed ship or scout whose brief carries the --herdr-lab
+#   contract, because its worker must drive Herdr and tmux over Unix sockets.
 #   With the sandbox on, the launch also gives the worker its own disk-backed
 #   GOCACHE and GOMODCACHE under state/<id>.gocache, and pre-creates the task's
 #   status log so its append grant has a file to cover.
@@ -3269,6 +3271,13 @@ if [ "$KIND" = ship ]; then
   if [ "$BRANCH" != "$STANDING_BRANCH$ID" ]; then
     echo "notice: $ID ships branch=$BRANCH while $PROJ_NAME registers the ship-branch prefix '$STANDING_BRANCH' (branch $STANDING_BRANCH$ID) - the task's branch and PR will read as firstmate-authored; proceed only on a current explicit captain instruction or an intake judgment you can state" >&2
   fi
+fi
+# Like the Gerrit refusal above, for a ship or a scout: a --herdr-lab brief
+# (bin/fm-brief.sh) has its worker drive Herdr and tmux lab sessions through
+# their Unix sockets, and the Claude sandbox refuses every socket connect.
+if [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ] && grep -qxF '# Herdr isolation - HARD SAFETY CONTRACT' "$SOURCE_BRIEF"; then
+  echo "error: $ID cannot launch in the Claude sandbox: $SOURCE_BRIEF was scaffolded with --herdr-lab, whose worker must itself drive Herdr and tmux lab sessions through their Unix sockets, and config/claude-sandbox=on refuses every socket connect; spawn it with a non-Claude harness, or write off to config/claude-sandbox" >&2
+  exit 1
 fi
 
 BRIEF_DIR_REAL=$(cd "$(dirname "$BRIEF")" && pwd -P)
