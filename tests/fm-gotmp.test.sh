@@ -154,6 +154,25 @@ test_teardown_removes_tasktmp_dir() {
   pass "fm-teardown removes the dir pointed to by tasktmp= in meta"
 }
 
+test_teardown_removes_read_only_module_cache() {
+  # A sandboxed Claude worker's GOMODCACHE lives in the temp root, and Go
+  # extracts each module as a read-only tree that a plain rm -rf cannot empty.
+  local id=td-modcache-z4
+  local task_tmp="$TMP_ROOT/fm-$id"
+  local module="$task_tmp/gomodcache/example.com/mod@v1.0.0"
+  mkdir -p "$module/sub"
+  printf 'package sub\n' > "$module/sub/sub.go"
+  chmod 0444 "$module/sub/sub.go"
+  chmod 0555 "$module/sub" "$module"
+  local fake
+  fake=$(make_fake_root "$id" "$task_tmp")
+  FM_HOME="$fake" bash "$fake/bin/fm-teardown.sh" "$id" >/dev/null 2>&1 \
+    || fail "teardown exited non-zero with a read-only module cache in tasktmp"
+  [ ! -e "$task_tmp" ] \
+    || fail "teardown left the tasktmp dir holding a read-only module cache ($task_tmp still exists)"
+  pass "fm-teardown removes a tasktmp holding a read-only Go module cache"
+}
+
 test_teardown_skips_gracefully_without_tasktmp() {
   # Backward compat: a meta from a pre-fix task has no tasktmp= line. Teardown must
   # not error and must not remove anything.
@@ -248,5 +267,6 @@ test_teardown_skips_gracefully_when_dir_missing() {
 }
 
 test_teardown_removes_tasktmp_dir
+test_teardown_removes_read_only_module_cache
 test_teardown_skips_gracefully_without_tasktmp
 test_teardown_skips_gracefully_when_dir_missing
