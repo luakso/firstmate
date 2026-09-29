@@ -2849,8 +2849,15 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
 # config/claude-sandbox=on (header above): the `,"sandbox":{...}` member for a
 # ship or scout's claude --settings JSON, escaped for the single-quoted shell
 # word it lands in. Claude Code (verified 2.1.283, Linux bubblewrap) then runs
-# every Bash command with the filesystem read-only outside the pane cwd, a
-# linked worktree's own git metadata, its private TMPDIR, and allowWrite;
+# every Bash command with the filesystem read-only outside the pane cwd, its
+# private TMPDIR, allowWrite, and - because the cwd is a linked worktree - the
+# project clone's whole shared .git (every ref, the object store, and other
+# tasks' worktrees/ entries; only its hooks/ and config stay denied), so the
+# fence guards everything outside the project clone but not the clone's shared
+# git data. Claude's protected paths (.claude/* such as .claude/skills,
+# .mcp.json, .vscode, .idea) stay read-only even inside the cwd, which in a
+# firstmate worktree covers .agents/skills through its tracked .claude/skills
+# symlink;
 # Unix-socket connects refused with EPERM, so Herdr, tmux, Docker, and the
 # D-Bus session bus are unreachable; and egress limited to allowedDomains, denied
 # rather than prompted under strictAllowlist so an unattended pane never parks

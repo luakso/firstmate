@@ -851,7 +851,9 @@ Promotion keeps the scout's running process and is not refused, so a Claude scou
 
 `bin/fm-spawn.sh`'s `claude_sandbox_settings` owns the exact settings; this is their effect on Linux (bubblewrap), where it was verified with Claude Code 2.1.283.
 
-- Writes succeed only in the worker's own worktree and that worktree's git metadata, Claude's private temp directory, and the task records the brief tells it to write: `state/<id>.status` (append), `state/<id>.inbox` with its `handled/` moves, `data/<id>`, the per-task temp root `/tmp/fm-<id>`, and the worker's own Go caches in `state/<id>.gocache`.
+- Writes succeed only in the worker's own worktree, the project clone's shared git data, Claude's private temp directory, and the task records the brief tells it to write: `state/<id>.status` (append), `state/<id>.inbox` with its `handled/` moves, `data/<id>`, the per-task temp root `/tmp/fm-<id>`, and the worker's own Go caches in `state/<id>.gocache`.
+  Because every worker runs in a linked worktree, Claude's sandbox also leaves the project clone's shared `.git` writable: every branch ref, the object store, and other tasks' `worktrees/` entries, with only its `hooks/` and `config` denied.
+  The fence therefore protects everything outside the project clone, but not the clone's shared git data.
   Every other write fails with `Read-only file system`, including in the shared directories the launch grants for reading, `state/operational-inbox` and the code root's `.agents/skills`, which the sandbox's `denyWrite` keeps read-only because other tasks and unfenced sessions load them.
 - Unix-socket connections fail with `Operation not permitted`, so the worker cannot reach Herdr, tmux, Docker, or desktop services behind D-Bus.
 - Network egress is limited to the Go module proxy and checksum database, and any other host is refused rather than prompted, so an unattended pane never parks on a network question.
@@ -865,6 +867,8 @@ Supported limits:
 - The fence covers Bash commands only; auto mode's classifier reviews Claude's built-in file tools instead.
 - The status command's optional fleet-ledger append cannot write inside the fence and is skipped; the watcher's per-poll capture records the same status line.
 - Anything else that needs a socket, the keyring, or another host, such as `git fetch`, browser automation, Lavish, or a tmux-driven test suite, fails inside the fence and is left to the no-mistakes pipeline or to Firstmate; a Gerrit ship is refused at spawn instead (above).
+- Claude's protected paths (`.claude/skills` and the other `.claude/*` entries, `.mcp.json`, `.vscode`, and `.idea`) are read-only to sandboxed Bash even inside the worktree; in a firstmate worktree that covers `.agents/skills` through the tracked `.claude/skills` symlink.
+  Edits there go through Claude's Edit tool, and git operations that rewrite those files, such as a rebase, checkout, or reset across a changed skill, are left to the no-mistakes pipeline or to Firstmate.
 - Inside the fence, the sandbox's protective placeholders for absent dotfiles (such as `.bashrc` or `.gitconfig`) appear in the worktree, so `git add -A` refuses them; a sandboxed worker stages explicit paths instead.
 
 ### When changes apply and inheritance
