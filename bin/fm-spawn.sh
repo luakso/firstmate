@@ -2863,30 +2863,35 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
 # with handled/ moves, its data/<id> report directory, and the per-task temp
 # root that holds GOTMPDIR; plus the worker's own disk-backed Go build and
 # module caches under state/<id>.gocache (created here too), because it cannot
-# write the user's shared ones. The fleet-ledger helper in
-# the status command is not granted: it needs lock and offset files across
-# state/, the command already tolerates its failure, and the watcher's
+# write the user's shared ones. The shared directories claude_add_dirs_flag
+# grants for reading (this home's state/operational-inbox and the code root's
+# .agents/skills) would otherwise be writable too, since Claude Code's sandbox
+# lets Bash write every --add-dir, so denyWrite keeps both read-only: their
+# records and skills feed other tasks and unfenced sessions. The fleet-ledger
+# helper in the status command is not granted: it needs lock and offset files
+# across state/, the command already tolerates its failure, and the watcher's
 # per-poll capture records the same line. The Go module proxy and checksum
 # database are the only allowed hosts, so a per-task module cache can fill.
 # excludedCommands (honored from --settings, ignored from project settings)
 # run git push, gh, gh-axi, and no-mistakes outside the fence under auto mode,
 # which config/claude-sandbox=on requires, because they need the D-Bus keyring
 # login and the no-mistakes daemon socket.
-claude_sandbox_settings() {  # <state-dir> <data-dir> <task-tmp> <task-id>
-  local state_dir=$1 data_dir=$2 task_tmp=$3 id=$4
-  local state_real data_real tmp_real json
+claude_sandbox_settings() {  # <state-dir> <data-dir> <task-tmp> <code-root> <task-id>
+  local state_dir=$1 data_dir=$2 task_tmp=$3 code_root=$4 id=$5
+  local state_real data_real tmp_real root_real json
   state_real=$(cd "$state_dir" && pwd -P) || return 1
   data_real=$(cd "$data_dir" && pwd -P) || return 1
   tmp_real=$(cd "$task_tmp" && pwd -P) || return 1
+  root_real=$(cd "$code_root" && pwd -P) || return 1
   mkdir -p "$state_real/$id.inbox/handled" "$data_real/$id" \
     "$state_real/$id.gocache/build" "$state_real/$id.gocache/mod" || return 1
   : >>"$state_real/$id.status" || return 1
-  json=$(jq -cn '{sandbox: {
+  json=$(jq -cn --arg opinbox "$state_real/operational-inbox" --arg skills "$root_real/.agents/skills" '{sandbox: {
       enabled: true,
       failIfUnavailable: true,
       allowUnsandboxedCommands: false,
       excludedCommands: ["git push", "git push *", "gh", "gh *", "gh-axi", "gh-axi *", "no-mistakes", "no-mistakes *"],
-      filesystem: {allowWrite: $ARGS.positional},
+      filesystem: {allowWrite: $ARGS.positional, denyWrite: [$opinbox, $skills]},
       network: {strictAllowlist: true, allowedDomains: ["proxy.golang.org", "sum.golang.org"]}
     }}' --args "$state_real/$id.status" "$state_real/$id.inbox" "$data_real/$id" "$tmp_real" "$state_real/$id.gocache") || return 1
   json=${json#\{}
@@ -5204,7 +5209,7 @@ case "$LAUNCH" in
 *__CLAUDESANDBOX__*)
   CLAUDE_SANDBOX_JSON=
   if [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
-    CLAUDE_SANDBOX_JSON=$(claude_sandbox_settings "$STATE" "$DATA" "$TASK_TMP" "$ID") || {
+    CLAUDE_SANDBOX_JSON=$(claude_sandbox_settings "$STATE" "$DATA" "$TASK_TMP" "$FM_ROOT" "$ID") || {
       echo "error: could not resolve the write grant for $ID's claude sandbox" >&2
       exit 1
     }

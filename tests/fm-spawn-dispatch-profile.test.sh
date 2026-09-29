@@ -1830,7 +1830,7 @@ test_claude_sandbox_off_matches_absent_launch() {
 }
 
 test_claude_sandbox_on_fences_ship_and_scout_launches() {
-  local kind rec id out status launch settings state_real data_real tmp_real want
+  local kind rec id out status launch settings state_real data_real tmp_real root_real want dir granted
   for kind in ship scout; do
     id="sandbox-on-$kind-z25"
     rec=$(make_spawn_case "sandbox-on-$kind" claude "$id")
@@ -1852,8 +1852,10 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
     state_real=$(cd "$HOME_DIR/state" && pwd -P)
     data_real=$(cd "$HOME_DIR/data" && pwd -P)
     tmp_real=$(cd "/tmp/fm-$id" && pwd -P)
+    root_real=$(cd "$ROOT" && pwd -P)
     want=$(jq -cn --arg status "$state_real/$id.status" --arg inbox "$state_real/$id.inbox" \
-      --arg data "$data_real/$id" --arg tmp "$tmp_real" --arg gocache "$state_real/$id.gocache" '{
+      --arg data "$data_real/$id" --arg tmp "$tmp_real" --arg gocache "$state_real/$id.gocache" \
+      --arg opinbox "$state_real/operational-inbox" --arg skills "$root_real/.agents/skills" '{
       feedbackDrafts: "off",
       attribution: {commit: "", pr: "", sessionUrl: false},
       sandbox: {
@@ -1861,11 +1863,21 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
         failIfUnavailable: true,
         allowUnsandboxedCommands: false,
         excludedCommands: ["git push", "git push *", "gh", "gh *", "gh-axi", "gh-axi *", "no-mistakes", "no-mistakes *"],
-        filesystem: {allowWrite: [$status, $inbox, $data, $tmp, $gocache]},
+        filesystem: {allowWrite: [$status, $inbox, $data, $tmp, $gocache], denyWrite: [$opinbox, $skills]},
         network: {strictAllowlist: true, allowedDomains: ["proxy.golang.org", "sum.golang.org"]}
       }}')
     [ "$(printf '%s' "$settings" | jq -cS .)" = "$(printf '%s' "$want" | jq -cS .)" ] \
       || fail "claude $kind sandbox settings differ"$'\n'"expected: $want"$'\n'"actual:   $settings"
+    # Claude Code's sandbox lets Bash write every --add-dir, so each directory the
+    # launch grants must be one of the task's own records or explicitly write-denied.
+    granted=0
+    while IFS= read -r dir; do
+      granted=$((granted + 1))
+      printf '%s' "$settings" | jq -e --arg dir "$dir" \
+        '.sandbox.filesystem | any((.allowWrite + .denyWrite)[]; . == $dir)' >/dev/null \
+        || fail "claude $kind launch grants --add-dir $dir, which the sandbox neither scopes to the task nor denies"
+    done < <(printf '%s' "$launch" | grep -o -- "--add-dir '[^']*'" | sed "s/^--add-dir '//; s/'\$//")
+    [ "$granted" -eq 4 ] || fail "claude $kind launch carried $granted --add-dir grants, expected 4"
     assert_contains "$launch" "export GOCACHE='$state_real/$id.gocache/build' GOMODCACHE='$state_real/$id.gocache/mod'; " \
       "claude $kind launch did not move the Go caches into the task's own disk-backed cache directory"
     assert_contains "$launch" "claude --permission-mode auto " "the sandboxed launch must run under auto mode"

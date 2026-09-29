@@ -852,7 +852,7 @@ Promotion keeps the scout's running process and is not refused, so a Claude scou
 `bin/fm-spawn.sh`'s `claude_sandbox_settings` owns the exact settings; this is their effect on Linux (bubblewrap), where it was verified with Claude Code 2.1.283.
 
 - Writes succeed only in the worker's own worktree and that worktree's git metadata, Claude's private temp directory, and the task records the brief tells it to write: `state/<id>.status` (append), `state/<id>.inbox` with its `handled/` moves, `data/<id>`, the per-task temp root `/tmp/fm-<id>`, and the worker's own Go caches in `state/<id>.gocache`.
-  Every other write fails with `Read-only file system`.
+  Every other write fails with `Read-only file system`, including in the shared directories the launch grants for reading, `state/operational-inbox` and the code root's `.agents/skills`, which the sandbox's `denyWrite` keeps read-only because other tasks and unfenced sessions load them.
 - Unix-socket connections fail with `Operation not permitted`, so the worker cannot reach Herdr, tmux, Docker, or desktop services behind D-Bus.
 - Network egress is limited to the Go module proxy and checksum database, and any other host is refused rather than prompted, so an unattended pane never parks on a network question.
 - `GOTMPDIR` lives in the per-task temp root, and `GOCACHE` and `GOMODCACHE` in the task's own disk-backed `state/<id>.gocache` (`build/` and `mod/`), so Go builds work inside the fence without filling a memory-backed `/tmp`; each sandboxed task starts with cold caches, and cleanup removes both, read-only module trees included.
