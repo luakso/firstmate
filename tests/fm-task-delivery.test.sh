@@ -1179,6 +1179,55 @@ EOF
   pass "forge=gerrit: yolo is refused with its reason, never silently dropped"
 }
 
+# A Gerrit worker must itself run git fetch and gerrit-axi publish, which the
+# Claude sandbox (config/claude-sandbox) fences away from the Gerrit host and the
+# git credentials. So a sandboxed Claude ship refuses at spawn and a sandboxed
+# Claude scout refuses promotion there, while the same task with the sandbox off
+# passes both.
+test_forge_gerrit_refuses_the_claude_sandbox() {
+  local rec home proj fakebin out status id meta
+  rec=$(make_home forge-sandbox "- proj [no-mistakes forge=gerrit] - fixture (added 2026-01-01)")
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  printf 'auto\n' > "$home/config/claude-permission-mode"
+  printf 'on\n' > "$home/config/claude-sandbox"
+  FM_HOME="$home" "$BRIEF" forge-sandbox-s1 proj --mode no-mistakes --forge gerrit >/dev/null \
+    || fail "a gerrit ship brief should scaffold"
+  fill_brief_subsections "$home/data/forge-sandbox-s1/brief.md" \
+    "Publish the review pass on the Gerrit project." "Ship the review pass."
+  out=$(run_spawn "$home" "$fakebin" forge-sandbox-s1 "$proj" claude --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a sandboxed claude ship launched on a gerrit-forge project"
+  assert_contains "$out" "cannot launch in the Claude sandbox" "the spawn refusal did not name the sandbox"
+  assert_contains "$out" "gerrit-axi publish" "the spawn refusal did not name the publication the fence blocks"
+  assert_absent "$home/state/forge-sandbox-s1.meta" "the refused spawn still recorded a task"
+  printf 'off\n' > "$home/config/claude-sandbox"
+  out=$(run_spawn "$home" "$fakebin" forge-sandbox-s1 "$proj" claude --mode no-mistakes --yolo off)
+  assert_not_contains "$out" "cannot launch in the Claude sandbox" \
+    "an unsandboxed claude ship was refused for the sandbox"
+
+  id=forge-sandbox-p1
+  meta="$home/state/$id.meta"
+  printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\nproject=%s\nharness=claude\n' "$id" "$proj" > "$meta"
+  FM_HOME="$home" "$BRIEF" "$id" proj --scout >/dev/null 2>&1 \
+    || fail "scout brief generation should succeed"
+  fill_brief_subsections "$home/data/$id/brief.md" \
+    "Fix what the investigation found on the Gerrit project." "Carry over only the fix."
+  printf 'on\n' > "$home/config/claude-sandbox"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a sandboxed claude scout was promoted to a gerrit ship"
+  assert_contains "$out" "cannot promote to a forge=gerrit ship" "the promotion refusal did not name the forge"
+  assert_contains "$out" "config/claude-sandbox=on" "the promotion refusal did not name the sandbox"
+  grep -qx 'kind=scout' "$meta" || fail "the refused promotion still flipped the task record"
+  printf 'off\n' > "$home/config/claude-sandbox"
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode no-mistakes --yolo off >/dev/null 2>&1 \
+    || fail "an unsandboxed claude scout could not be promoted to a gerrit ship"
+  grep -qx 'kind=ship' "$meta" || fail "the unsandboxed promotion did not flip the task record"
+  pass "forge=gerrit: a sandboxed claude ship refuses at spawn and a sandboxed claude scout at promotion"
+}
+
 # The point of binding the forge is that it changes what no-mistakes MEANS for the
 # worker. The brief must carry the per-run skip vocabulary, must keep every step
 # that does the reviewing, must require custody recovery before the worker may
@@ -1628,6 +1677,7 @@ test_project_mode_maps_the_conditional_policy
 test_project_mode_binds_the_forge_orthogonally
 test_project_mode_refuses_only_a_malformed_forge_binding
 test_forge_gerrit_refuses_yolo
+test_forge_gerrit_refuses_the_claude_sandbox
 test_forge_gerrit_changes_what_no_mistakes_means
 test_forge_gerrit_direct_pr_publishes_one_change
 test_spawn_requires_the_brief_to_carry_the_registered_forge

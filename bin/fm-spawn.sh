@@ -324,9 +324,14 @@
 #   never gets it: it must still reach its runtime backend's socket and write
 #   its own home's state. Parsing, refusal, per-spawn re-reading, and
 #   secondmate-home inheritance match config/claude-permission-mode above.
-#   With the sandbox on, the launch also relocates GOCACHE and GOMODCACHE into
-#   the per-task temp root beside GOTMPDIR, and pre-creates the task's status
-#   log so its append grant has a file to cover.
+#   `on` also requires that file to resolve to auto, refused otherwise before
+#   any endpoint or worktree exists: the commands the fence exempts and Claude's
+#   file tools are reviewed only by auto mode's classifier. A forge=gerrit ship
+#   on a sandboxed Claude launch refuses too, because its worker must itself
+#   fetch from and publish to the Gerrit host, which the fence cannot reach.
+#   With the sandbox on, the launch also gives the worker its own disk-backed
+#   GOCACHE and GOMODCACHE under state/<id>.gocache, and pre-creates the task's
+#   status log so its append grant has a file to cover.
 # Worker account pin (config/claude-account, config/pi-account):
 #   Opt-in. With no file, a Claude or Pi launch is unchanged: Claude still
 #   receives this process's own CLAUDE_CONFIG_DIR when it is set, and Pi the
@@ -600,6 +605,10 @@ if [ "$CLAUDE_SANDBOX_PRESENT" = 1 ]; then
     exit 1
     ;;
   esac
+fi
+if [ "$CLAUDE_SANDBOX" = on ] && [ "$CLAUDE_PERMISSION_MODE" != auto ]; then
+  echo "error: config/claude-sandbox is on but config/claude-permission-mode resolves to '$CLAUDE_PERMISSION_MODE'; the sandbox requires auto, because the commands it runs outside the fence (git push, gh, gh-axi, no-mistakes) and Claude's file tools are reviewed only by auto mode's classifier; write auto to config/claude-permission-mode, or off to config/claude-sandbox" >&2
+  exit 1
 fi
 # config/lavish-axi-host is the primary-owned per-machine address for the
 # shared Lavish server. Read it once per launch and refuse malformed values so
@@ -2852,22 +2861,25 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
 # write outside its worktree: its status log (append; created here because a
 # grant cannot cover a file that does not exist at launch), its steering inbox
 # with handled/ moves, its data/<id> report directory, and the per-task temp
-# root that holds GOTMPDIR, GOCACHE, and GOMODCACHE. The fleet-ledger helper in
+# root that holds GOTMPDIR; plus the worker's own disk-backed Go build and
+# module caches under state/<id>.gocache (created here too), because it cannot
+# write the user's shared ones. The fleet-ledger helper in
 # the status command is not granted: it needs lock and offset files across
 # state/, the command already tolerates its failure, and the watcher's
 # per-poll capture records the same line. The Go module proxy and checksum
 # database are the only allowed hosts, so a per-task module cache can fill.
 # excludedCommands (honored from --settings, ignored from project settings)
-# run git push, gh, gh-axi, and no-mistakes outside the fence under the
-# ordinary permission mode, because they need the D-Bus keyring login and the
-# no-mistakes daemon socket.
+# run git push, gh, gh-axi, and no-mistakes outside the fence under auto mode,
+# which config/claude-sandbox=on requires, because they need the D-Bus keyring
+# login and the no-mistakes daemon socket.
 claude_sandbox_settings() {  # <state-dir> <data-dir> <task-tmp> <task-id>
   local state_dir=$1 data_dir=$2 task_tmp=$3 id=$4
   local state_real data_real tmp_real json
   state_real=$(cd "$state_dir" && pwd -P) || return 1
   data_real=$(cd "$data_dir" && pwd -P) || return 1
   tmp_real=$(cd "$task_tmp" && pwd -P) || return 1
-  mkdir -p "$state_real/$id.inbox/handled" "$data_real/$id" || return 1
+  mkdir -p "$state_real/$id.inbox/handled" "$data_real/$id" \
+    "$state_real/$id.gocache/build" "$state_real/$id.gocache/mod" || return 1
   : >>"$state_real/$id.status" || return 1
   json=$(jq -cn '{sandbox: {
       enabled: true,
@@ -2876,7 +2888,7 @@ claude_sandbox_settings() {  # <state-dir> <data-dir> <task-tmp> <task-id>
       excludedCommands: ["git push", "git push *", "gh", "gh *", "gh-axi", "gh-axi *", "no-mistakes", "no-mistakes *"],
       filesystem: {allowWrite: $ARGS.positional},
       network: {strictAllowlist: true, allowedDomains: ["proxy.golang.org", "sum.golang.org"]}
-    }}' --args "$state_real/$id.status" "$state_real/$id.inbox" "$data_real/$id" "$tmp_real") || return 1
+    }}' --args "$state_real/$id.status" "$state_real/$id.inbox" "$data_real/$id" "$tmp_real" "$state_real/$id.gocache") || return 1
   json=${json#\{}
   json=${json%\}}
   printf ',%s' "${json//\'/\'\\\'\'}"
@@ -3218,6 +3230,13 @@ if [ "$KIND" = ship ]; then
   # manufacture one.
   if [ "$STANDING_FORGE" = gerrit ] && [ "$YOLO" = on ]; then
     echo "error: --yolo on is refused for $ID: $PROJ_NAME is registered forge=gerrit, where yolo is inactive because a Code-Review+2 is a positive attributed claim that a named human approved and firstmate must not manufacture one (captain's decision 2026-09-15); spawn with --yolo off" >&2
+    exit 1
+  fi
+  # A Gerrit worker must itself run git fetch and gerrit-axi publish, and the
+  # Claude sandbox (config/claude-sandbox) keeps both from the Gerrit host and
+  # the git credentials, so the worker could never publish.
+  if [ "$STANDING_FORGE" = gerrit ] && [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
+    echo "error: $ID cannot launch in the Claude sandbox: $PROJ_NAME is registered forge=gerrit, whose worker must itself run git fetch and gerrit-axi publish, and config/claude-sandbox=on fences both away from the Gerrit host and the git credentials; spawn it with a non-Claude harness, or write off to config/claude-sandbox" >&2
     exit 1
   fi
   # The registry holds the captain's standing posture, so dropping below it is
@@ -4471,13 +4490,6 @@ if ! (umask 077 && mkdir "$TASK_TMP") 2>/dev/null; then
   fi
 fi
 mkdir -p "$TASK_TMP/gotmp"
-# A sandboxed Claude worker (config/claude-sandbox) cannot write the user's
-# shared Go build and module caches, so its GOCACHE and GOMODCACHE live here
-# too, inside the fence's write grant; teardown makes the module cache's
-# read-only tree writable before removing the root.
-if [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
-  mkdir -p "$TASK_TMP/gocache" "$TASK_TMP/gomodcache"
-fi
 
 # Per-harness turn-end hook where enabled: a file that touches
 # state/<id>.turn-ended when the agent finishes a turn. Worktree-resident hooks
@@ -5260,10 +5272,10 @@ fi
 # to keeping trailers, leave core.hooksPath alone so the repository's hooks run
 # directly. An export statement inside the pane command carries the override
 # across every step of a compound raw launch while firstmate's own git is unchanged.
-# The sandboxed worker's Go caches (see TASK_TMP above) ride the launch command
-# as an export, so they survive a filtered launch environment too.
+# The sandboxed worker's Go caches (claude_sandbox_settings above) ride the
+# launch command as an export, so they survive a filtered launch environment too.
 if [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
-  LAUNCH="export GOCACHE=$(shell_quote "$TASK_TMP/gocache") GOMODCACHE=$(shell_quote "$TASK_TMP/gomodcache"); $LAUNCH"
+  LAUNCH="export GOCACHE=$(shell_quote "$STATE_REAL/$ID.gocache/build") GOMODCACHE=$(shell_quote "$STATE_REAL/$ID.gocache/mod"); $LAUNCH"
 fi
 if [ "$KEEP_AI_TRAILERS" = 0 ]; then
   LAUNCH="export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=$(shell_quote "$GIT_HOOKS_DIR"); $LAUNCH"

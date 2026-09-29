@@ -155,22 +155,28 @@ test_teardown_removes_tasktmp_dir() {
 }
 
 test_teardown_removes_read_only_module_cache() {
-  # A sandboxed Claude worker's GOMODCACHE lives in the temp root, and Go
-  # extracts each module as a read-only tree that a plain rm -rf cannot empty.
+  # A sandboxed Claude worker's GOCACHE and GOMODCACHE live in its disk-backed
+  # state/<id>.gocache, and Go extracts each module as a read-only tree that a
+  # plain rm -rf cannot empty.
   local id=td-modcache-z4
   local task_tmp="$TMP_ROOT/fm-$id"
-  local module="$task_tmp/gomodcache/example.com/mod@v1.0.0"
-  mkdir -p "$module/sub"
-  printf 'package sub\n' > "$module/sub/sub.go"
-  chmod 0444 "$module/sub/sub.go"
-  chmod 0555 "$module/sub" "$module"
+  mkdir -p "$task_tmp/gotmp"
   local fake
   fake=$(make_fake_root "$id" "$task_tmp")
+  local cache="$fake/state/$id.gocache"
+  local module="$cache/mod/example.com/mod@v1.0.0"
+  mkdir -p "$module/sub" "$cache/build/00"
+  printf 'package sub\n' > "$module/sub/sub.go"
+  printf 'object\n' > "$cache/build/00/entry-a"
+  chmod 0444 "$module/sub/sub.go"
+  chmod 0555 "$module/sub" "$module"
   FM_HOME="$fake" bash "$fake/bin/fm-teardown.sh" "$id" >/dev/null 2>&1 \
-    || fail "teardown exited non-zero with a read-only module cache in tasktmp"
+    || fail "teardown exited non-zero with a read-only module cache in state/<id>.gocache"
+  [ ! -e "$cache" ] \
+    || fail "teardown left the task's Go caches holding a read-only module cache ($cache still exists)"
   [ ! -e "$task_tmp" ] \
-    || fail "teardown left the tasktmp dir holding a read-only module cache ($task_tmp still exists)"
-  pass "fm-teardown removes a tasktmp holding a read-only Go module cache"
+    || fail "teardown did not remove the tasktmp dir beside the Go caches ($task_tmp still exists)"
+  pass "fm-teardown removes a task's Go caches, read-only module cache included"
 }
 
 test_teardown_skips_gracefully_without_tasktmp() {

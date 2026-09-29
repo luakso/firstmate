@@ -1811,7 +1811,8 @@ test_non_claude_harness_ignores_claude_permission_mode() {
 
 # config/claude-sandbox (bin/fm-spawn.sh header): `off` launches exactly as an
 # absent file does, `on` adds only the sandbox member plus the per-task Go
-# caches to Claude crewmate and scout launches, and anything else refuses.
+# caches to Claude crewmate and scout launches and requires auto mode, and
+# anything else refuses.
 test_claude_sandbox_off_matches_absent_launch() {
   local rec id out status launch expected
   id=sandbox-off-z24
@@ -1836,6 +1837,7 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
     read_case_record "$rec"
     # Surrounding whitespace is trimmed, like config/claude-permission-mode.
     printf '  on\n' > "$HOME_DIR/config/claude-sandbox"
+    printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
     assert_absent "$HOME_DIR/state/$id.status" "the status log must not pre-exist the spawn"
 
     if [ "$kind" = ship ]; then
@@ -1851,7 +1853,7 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
     data_real=$(cd "$HOME_DIR/data" && pwd -P)
     tmp_real=$(cd "/tmp/fm-$id" && pwd -P)
     want=$(jq -cn --arg status "$state_real/$id.status" --arg inbox "$state_real/$id.inbox" \
-      --arg data "$data_real/$id" --arg tmp "$tmp_real" '{
+      --arg data "$data_real/$id" --arg tmp "$tmp_real" --arg gocache "$state_real/$id.gocache" '{
       feedbackDrafts: "off",
       attribution: {commit: "", pr: "", sessionUrl: false},
       sandbox: {
@@ -1859,18 +1861,19 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
         failIfUnavailable: true,
         allowUnsandboxedCommands: false,
         excludedCommands: ["git push", "git push *", "gh", "gh *", "gh-axi", "gh-axi *", "no-mistakes", "no-mistakes *"],
-        filesystem: {allowWrite: [$status, $inbox, $data, $tmp]},
+        filesystem: {allowWrite: [$status, $inbox, $data, $tmp, $gocache]},
         network: {strictAllowlist: true, allowedDomains: ["proxy.golang.org", "sum.golang.org"]}
       }}')
     [ "$(printf '%s' "$settings" | jq -cS .)" = "$(printf '%s' "$want" | jq -cS .)" ] \
       || fail "claude $kind sandbox settings differ"$'\n'"expected: $want"$'\n'"actual:   $settings"
-    assert_contains "$launch" "export GOCACHE='/tmp/fm-$id/gocache' GOMODCACHE='/tmp/fm-$id/gomodcache'; " \
-      "claude $kind launch did not move the Go caches into the task temp root"
-    assert_contains "$launch" "claude --dangerously-skip-permissions " "the sandbox must not change the permission flag"
+    assert_contains "$launch" "export GOCACHE='$state_real/$id.gocache/build' GOMODCACHE='$state_real/$id.gocache/mod'; " \
+      "claude $kind launch did not move the Go caches into the task's own disk-backed cache directory"
+    assert_contains "$launch" "claude --permission-mode auto " "the sandboxed launch must run under auto mode"
     [ -f "$HOME_DIR/state/$id.status" ] || fail "claude $kind spawn did not create the status log its sandbox grant covers"
     [ ! -s "$HOME_DIR/state/$id.status" ] || fail "claude $kind spawn wrote into the status log"
     [ -d "$HOME_DIR/state/$id.inbox/handled" ] || fail "claude $kind spawn did not create the granted inbox"
-    [ -d "/tmp/fm-$id/gocache" ] && [ -d "/tmp/fm-$id/gomodcache" ] || fail "claude $kind spawn did not create the Go cache directories"
+    [ -d "$HOME_DIR/state/$id.gocache/build" ] && [ -d "$HOME_DIR/state/$id.gocache/mod" ] || fail "claude $kind spawn did not create the Go cache directories"
+    [ ! -e "/tmp/fm-$id/gocache" ] && [ ! -e "/tmp/fm-$id/gomodcache" ] || fail "claude $kind spawn still put Go caches in the memory-backed task temp root"
     rm -rf -- "/tmp/fm-$id"
   done
   pass "config/claude-sandbox=on fences claude ship and scout launches with exactly the task grant"
@@ -1894,17 +1897,43 @@ test_claude_sandbox_invalid_refuses_before_endpoint_or_metadata() {
   pass "an unrecognized config/claude-sandbox token refuses before any endpoint or metadata"
 }
 
+# The commands the fence exempts and Claude's file tools are reviewed only by
+# auto mode, so `on` under the default bypass posture refuses rather than
+# launching them unreviewed.
+test_claude_sandbox_refuses_without_auto_permission_mode() {
+  local posture rec id out status
+  for posture in absent bypass; do
+    id="sandbox-noauto-$posture-z30"
+    rec=$(make_spawn_case "sandbox-noauto-$posture" claude "$id")
+    read_case_record "$rec"
+    printf 'on\n' > "$HOME_DIR/config/claude-sandbox"
+    [ "$posture" = absent ] || printf '%s\n' "$posture" > "$HOME_DIR/config/claude-permission-mode"
+
+    out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+    status=$?
+    expect_code 1 "$status" "claude-sandbox=on with a $posture permission mode must refuse the spawn"
+    assert_contains "$out" "config/claude-sandbox is on but config/claude-permission-mode resolves to 'bypass'" \
+      "refusal must name both files and the resolved permission mode ($posture)"
+    assert_contains "$out" "write auto to config/claude-permission-mode" "refusal must name the fix ($posture)"
+    [ ! -s "$LAUNCH_LOG" ] || fail "a sandbox without auto mode must launch nothing (got: $(cat "$LAUNCH_LOG"))"
+    assert_absent "$HOME_DIR/state/$id.meta" "refusal must happen before meta is written ($posture)"
+    assert_absent "/tmp/fm-$id" "refusal must happen before the task temp root exists ($posture)"
+  done
+  pass "config/claude-sandbox=on refuses before any endpoint unless config/claude-permission-mode is auto"
+}
+
 test_claude_sandbox_refuses_raw_claude_command() {
   local rec id out status
   id=sandbox-raw-z27
   rec=$(make_spawn_case sandbox-raw claude "$id")
   read_case_record "$rec"
   printf 'on\n' > "$HOME_DIR/config/claude-sandbox"
+  printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
 
   out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" "claude --model opus")
   status=$?
   expect_code 1 "$status" "a raw claude command must refuse while the sandbox is on"
-  assert_contains "$out" "config/claude-sandbox is on" "refusal must name the sandbox setting"
+  assert_contains "$out" "config/claude-sandbox is on, and a raw claude launch command cannot carry the sandbox settings" "refusal must name the sandbox setting"
   [ ! -s "$LAUNCH_LOG" ] || fail "a refused raw claude command must launch nothing (got: $(cat "$LAUNCH_LOG"))"
   assert_absent "$HOME_DIR/state/$id.meta" "refusal must happen before meta is written"
   pass "config/claude-sandbox=on refuses a raw claude launch command it cannot fence"
@@ -1916,6 +1945,7 @@ test_claude_sandbox_leaves_other_launches_unfenced() {
   rec=$(make_spawn_case sandbox-codex codex "$id")
   read_case_record "$rec"
   printf 'on\n' > "$HOME_DIR/config/claude-sandbox"
+  printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
   out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --harness codex)
   status=$?
   expect_code 0 "$status" "codex spawn under claude-sandbox=on should succeed"$'\n'"$out"
@@ -1928,13 +1958,14 @@ test_claude_sandbox_leaves_other_launches_unfenced() {
   rec=$(make_spawn_case sandbox-secondmate claude "$id")
   read_case_record "$rec"
   printf 'on\n' > "$HOME_DIR/config/claude-sandbox"
+  printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
   sm="$CASE_DIR/secondmate-home"
   make_seeded_secondmate_home "$sm" "$id"
   out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
   status=$?
   expect_code 0 "$status" "claude secondmate spawn under claude-sandbox=on should succeed"$'\n'"$out"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "claude --dangerously-skip-permissions " "secondmate launch did not run claude"
+  assert_contains "$launch" "claude --permission-mode auto " "secondmate launch did not run claude"
   assert_not_contains "$launch" '"sandbox"' "a claude secondmate must launch unfenced"
   assert_not_contains "$launch" "GOMODCACHE" "a claude secondmate must keep the shared Go caches"
   pass "config/claude-sandbox fences claude crewmates and scouts only"
@@ -1995,6 +2026,7 @@ test_non_claude_harness_ignores_claude_permission_mode
 test_claude_sandbox_off_matches_absent_launch
 test_claude_sandbox_on_fences_ship_and_scout_launches
 test_claude_sandbox_invalid_refuses_before_endpoint_or_metadata
+test_claude_sandbox_refuses_without_auto_permission_mode
 test_claude_sandbox_refuses_raw_claude_command
 test_claude_sandbox_leaves_other_launches_unfenced
 test_non_claude_harness_ignores_config_dir

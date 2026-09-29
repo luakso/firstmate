@@ -3304,7 +3304,8 @@ cleanup_firstmate_home_children() {
       "$sub_state/$child_id.devin-config.json" \
       "$sub_state/.$child_id.branch-outcome-index"
     chmod u+w "$sub_state/$child_id.git-hooks" 2>/dev/null || true
-    rm -rf "$sub_state/$child_id.git-hooks"
+    chmod -R u+w "$sub_state/$child_id.gocache" 2>/dev/null || true
+    rm -rf "$sub_state/$child_id.git-hooks" "$sub_state/$child_id.gocache"
   done
 }
 
@@ -3738,12 +3739,7 @@ remove_kimi_turnend_auth "$STATE" "$ID" || exit 1
 fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
-# A sandboxed Claude worker's GOMODCACHE lives here too, and Go extracts modules
-# as read-only trees, so make the root owner-writable before removing it.
-if [ -n "$TASK_TMP" ]; then
-  chmod -R u+w -- "$TASK_TMP" 2>/dev/null || true
-  rm -rf -- "$TASK_TMP"
-fi
+[ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
 # Retire only this Firstmate home's launch namespace. Its never-reused per-spawn
 # files leave the equal task-id namespace of every other home untouched.
 teardown_launch_home_token() {
@@ -3786,9 +3782,11 @@ rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.progress" \
 # retired endpoint; teardown only runs after landing is confirmed, so any
 # leftover unhandled steer here is moot rather than unlanded work.
 # state/<id>.git-hooks is the spawn-owned commit-msg strip directory, left
-# read-only by its installer.
+# read-only by its installer. state/<id>.gocache holds a sandboxed Claude
+# worker's Go caches, whose modules Go extracts as read-only trees.
 chmod u+w "$STATE/$ID.git-hooks" 2>/dev/null || true
-rm -rf "$STATE/$ID.inbox" "$STATE/$ID.git-hooks"
+chmod -R u+w "$STATE/$ID.gocache" 2>/dev/null || true
+rm -rf "$STATE/$ID.inbox" "$STATE/$ID.git-hooks" "$STATE/$ID.gocache"
 # A presentation journal the close path left behind is orphaned once the
 # recorded pane is proven gone (the Herdr gate above) unless it still names a
 # live projected workspace - a version 2 binding of some other pane, or a
