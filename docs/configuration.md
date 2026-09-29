@@ -843,8 +843,9 @@ The token is the file's whitespace-trimmed content.
 Any other value or an unreadable file refuses every spawn from that home before any endpoint, worktree, or task record exists, exactly like `config/claude-permission-mode`.
 So does `on` while [`config/claude-permission-mode`](#claude-permission-mode-configclaude-permission-mode) is absent or `bypass`: the commands the fence exempts and Claude's file tools are reviewed only by auto mode's classifier, so the sandbox never runs without it.
 With `on`, a raw `claude ...` launch command refuses too, because it cannot carry the sandbox settings.
-With `on`, a Claude ship on a `forge=gerrit` project refuses at spawn and relaunch, and a Claude scout on one refuses promotion, because a Gerrit worker must itself run `git fetch` and `gerrit-axi publish`, and the fence keeps both from the Gerrit host and the git credentials.
+With `on`, a Claude ship on a `forge=gerrit` project refuses at spawn and relaunch, because a Gerrit worker must itself run `git fetch` and `gerrit-axi publish`, and the fence keeps both from the Gerrit host and the git credentials.
 Ship a Gerrit task with a non-Claude harness, or turn the sandbox off for it.
+Promotion keeps the scout's running process and is not refused, so a Claude scout launched inside the sandbox on a `forge=gerrit` project cannot publish after promotion: write `off` to `config/claude-sandbox` and relaunch the scout before promoting it.
 
 ### What a sandboxed worker can and cannot do
 
@@ -863,7 +864,7 @@ Supported limits:
 
 - The fence covers Bash commands only; auto mode's classifier reviews Claude's built-in file tools instead.
 - The status command's optional fleet-ledger append cannot write inside the fence and is skipped; the watcher's per-poll capture records the same status line.
-- Anything else that needs a socket, the keyring, or another host, such as `git fetch`, browser automation, Lavish, or a tmux-driven test suite, fails inside the fence and is left to the no-mistakes pipeline or to Firstmate; Gerrit publication is refused up front instead (above).
+- Anything else that needs a socket, the keyring, or another host, such as `git fetch`, browser automation, Lavish, or a tmux-driven test suite, fails inside the fence and is left to the no-mistakes pipeline or to Firstmate; a Gerrit ship is refused at spawn instead (above).
 - Inside the fence, the sandbox's protective placeholders for absent dotfiles (such as `.bashrc` or `.gitconfig`) appear in the worktree, so `git add -A` refuses them; a sandboxed worker stages explicit paths instead.
 
 ### When changes apply and inheritance

@@ -194,13 +194,6 @@ if [ -n "$PROMOTE_PROJECT" ]; then
   fi
   FORGE=${PROMOTE_STANDING_FORGE:-none}
   refuse_impossible_forge_posture || exit 1
-  # bin/fm-spawn.sh refuses a forge=gerrit ship in the Claude sandbox, and a
-  # promoted Claude scout would run its Gerrit publication inside that fence.
-  if [ "$FORGE" = gerrit ] && [ "$(sed -n 's/^harness=//p' "$META" | head -n 1)" = claude ] &&
-    [ "$(tr -d '[:space:]' 2>/dev/null <"${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/claude-sandbox")" = on ]; then
-    echo "error: $ID cannot promote to a forge=gerrit ship: it runs claude, and config/claude-sandbox=on fences the git fetch and gerrit-axi publish a Gerrit worker must run away from the Gerrit host and the git credentials; spawn the ship with a non-Claude harness instead, or write off to config/claude-sandbox and relaunch the scout before promoting" >&2
-    exit 1
-  fi
 fi
 # An unbound project keeps the exact wording it always had.
 PROMOTE_FORGE_WORDS=
