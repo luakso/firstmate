@@ -337,7 +337,10 @@
 #   carries a .claude/settings.json, whatever it holds, the launch passes
 #   --setting-sources user,local so its hooks and helper commands never run
 #   outside the fence and its keys never merge into it, and tells the worker to
-#   read the project instructions Claude then skips.
+#   read the project instructions Claude then skips. Skipping that file also
+#   drops its narrowing rules (permissions.deny, sandbox.filesystem denyRead and
+#   denyWrite, sandbox.credentials deny entries, sandbox.network.deniedDomains),
+#   so a captain who relies on them restates them in user settings.
 # Worker account pin (config/claude-account, config/pi-account):
 #   Opt-in. With no file, a Claude or Pi launch is unchanged: Claude still
 #   receives this process's own CLAUDE_CONFIG_DIR when it is set, and Pi the
@@ -2889,6 +2892,11 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
 # applies. Claude ties the project's CLAUDE.md,
 # .claude/rules, skills, and agents to the same source, so the worker's system
 # prompt then tells it to read CLAUDE.md, its imports, and .claude/rules itself.
+# The skipped file's narrowing rules (permissions.deny, sandbox.filesystem
+# denyRead and denyWrite, sandbox.credentials deny entries,
+# sandbox.network.deniedDomains) are dropped with it; they hold again only when
+# restated in user settings, since this worktree's settings.local.json is
+# Firstmate's and is rewritten at every launch.
 # The write grant is exactly what the brief tells the worker to
 # write outside its worktree: its status log (append; created here because a
 # grant cannot cover a file that does not exist at launch), its steering inbox

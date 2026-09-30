@@ -13,7 +13,7 @@ Busy hooks verified 2026-07-28 on Claude Code 2.1.220.
 | Model | `--model <model>`; discover through the interactive `/model` picker, with alias or full-name shape documented by `claude --help`. |
 | Effort | `--effort <low\|medium\|high\|xhigh\|max>`, verified on 2.1.196. |
 | Permissions | `--dangerously-skip-permissions` by default, or `--permission-mode auto` when `config/claude-permission-mode` is `auto`; the `auto` shape verified on 2.1.269. See [`Claude permission mode`](../../../../../docs/configuration.md#claude-permission-mode-configclaude-permission-mode) for the launch grant and configuration. |
-| Sandbox | Off unless `config/claude-sandbox` is `on`, which requires `config/claude-permission-mode` `auto` and fences crewmate and scout Bash commands in Claude Code's sandbox through the launch's `--settings` JSON, adding `--setting-sources user,local` whenever the worktree carries a `.claude/settings.json`; verified on 2.1.283 (Linux). See [`Claude sandbox`](../../../../../docs/configuration.md#claude-sandbox-configclaude-sandbox). |
+| Sandbox | Off unless `config/claude-sandbox` is `on`, which requires `config/claude-permission-mode` `auto` and fences crewmate and scout Bash commands in Claude Code's sandbox through the launch's `--settings` JSON, adding `--setting-sources user,local` whenever the worktree carries a `.claude/settings.json`, which also drops that file's deny and credential rules unless they are restated in user settings; verified on 2.1.283 (Linux). See [`Claude sandbox`](../../../../../docs/configuration.md#claude-sandbox-configclaude-sandbox). |
 
 ## Workspace trust
 
