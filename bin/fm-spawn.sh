@@ -333,10 +333,11 @@
 #   contract, because its worker must drive Herdr and tmux over Unix sockets.
 #   With the sandbox on, the launch also gives the worker its own disk-backed
 #   GOCACHE and GOMODCACHE under state/<id>.gocache, and pre-creates the task's
-#   status log so its append grant has a file to cover. When the worktree's
-#   tracked .claude/settings.json defines hooks, which Claude Code would run
-#   outside the fence, the launch passes --setting-sources user,local and tells
-#   the worker to read the project instructions Claude then skips.
+#   status log so its append grant has a file to cover. When the worktree
+#   carries a .claude/settings.json, whatever it holds, the launch passes
+#   --setting-sources user,local so its hooks and helper commands never run
+#   outside the fence and its keys never merge into it, and tells the worker to
+#   read the project instructions Claude then skips.
 # Worker account pin (config/claude-account, config/pi-account):
 #   Opt-in. With no file, a Claude or Pi launch is unchanged: Claude still
 #   receives this process's own CLAUDE_CONFIG_DIR when it is set, and Pi the
@@ -362,9 +363,9 @@
 #                  to the claude --settings JSON (claude_sandbox_settings below);
 #                  empty when the sandbox is off or the launch is a secondmate
 #     __CLAUDESETTINGSOURCES__ `--setting-sources user,local ` when
-#                  __CLAUDESANDBOX__ is non-empty and the worktree's tracked
-#                  .claude/settings.json defines hooks, so that file never
-#                  loads (supplies its own trailing space); empty otherwise
+#                  __CLAUDESANDBOX__ is non-empty and the worktree carries a
+#                  .claude/settings.json, so that file never loads (supplies
+#                  its own trailing space); empty otherwise
 #     __CLAUDEPROJECTMEMORY__ the task-worker system-prompt sentence telling
 #                  the worker to read the project's CLAUDE.md, its imports, and
 #                  .claude/rules itself, set exactly when
@@ -2877,13 +2878,15 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
 # rather than prompted under strictAllowlist so an unattended pane never parks
 # on a network question. failIfUnavailable stops the launch instead of running
 # unfenced, and allowUnsandboxedCommands=false removes the model's per-command
-# escape hatch, and makes Claude ignore sandbox.excludedCommands from project
-# and local settings. When the worktree's tracked .claude/settings.json defines
-# hooks (claude_project_settings_define_hooks below), which Claude Code runs
-# outside the sandbox on scripts the worker may edit inside it, the launch also
-# passes --setting-sources user,local so that file never loads; Firstmate's own
-# worker hooks live in the untracked .claude/settings.local.json and still load,
-# and this --settings JSON always applies. Claude ties the project's CLAUDE.md,
+# escape hatch. This JSON overrides only the keys it sets: a project's
+# .claude/settings.json would merge its array keys (sandbox paths, permission
+# rules) into the fence, apply keys this JSON never sets, and run its hooks and
+# helper commands (statusLine, apiKeyHelper) outside the sandbox on scripts the
+# worker may edit inside it. So whenever the worktree carries that file,
+# whatever it holds, the launch also passes --setting-sources user,local so it
+# never loads; Firstmate's own worker hooks live in the untracked
+# .claude/settings.local.json and still load, and this --settings JSON always
+# applies. Claude ties the project's CLAUDE.md,
 # .claude/rules, skills, and agents to the same source, so the worker's system
 # prompt then tells it to read CLAUDE.md, its imports, and .claude/rules itself.
 # The write grant is exactly what the brief tells the worker to
@@ -2906,13 +2909,6 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
 # the D-Bus keyring login and the no-mistakes daemon socket. An excluded git
 # push still fires the repository's own git hooks (such as a husky pre-push)
 # outside the fence.
-claude_project_settings_define_hooks() {  # <worktree>
-  local settings="$1/.claude/settings.json" rc=0
-  [ -e "$settings" ] || [ -L "$settings" ] || return 1
-  jq -e '(.hooks // {}) | length > 0' "$settings" >/dev/null 2>&1 || rc=$?
-  [ "$rc" -ne 1 ]
-}
-
 claude_sandbox_settings() {  # <state-dir> <data-dir> <task-tmp> <code-root> <task-id>
   local state_dir=$1 data_dir=$2 task_tmp=$3 code_root=$4 id=$5
   local state_real data_real tmp_real root_real json
@@ -5259,7 +5255,7 @@ case "$LAUNCH" in
       echo "error: could not resolve the write grant for $ID's claude sandbox" >&2
       exit 1
     }
-    if claude_project_settings_define_hooks "$WT"; then
+    if [ -e "$WT/.claude/settings.json" ] || [ -L "$WT/.claude/settings.json" ]; then
       CLAUDE_SETTING_SOURCES='--setting-sources user,local '
       CLAUDE_PROJECT_MEMORY=' Claude Code has not loaded the instructions of this project for this session, so before starting the task read its CLAUDE.md, every file that CLAUDE.md imports (such as AGENTS.md), and the files under .claude/rules, and treat them as the project instructions Claude Code would otherwise have loaded.'
     fi
