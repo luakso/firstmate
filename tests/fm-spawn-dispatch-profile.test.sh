@@ -1881,8 +1881,10 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
     assert_contains "$launch" "export GOCACHE='$state_real/$id.gocache/build' GOMODCACHE='$state_real/$id.gocache/mod'; " \
       "claude $kind launch did not move the Go caches into the task's own disk-backed cache directory"
     assert_contains "$launch" "claude --permission-mode auto " "the sandboxed launch must run under auto mode"
-    assert_contains "$launch" "' --setting-sources user,local --settings '" \
-      "claude $kind launch did not drop the worktree's project setting source"
+    assert_not_contains "$launch" "--setting-sources" \
+      "claude $kind launch dropped a setting source for a worktree whose project settings define no hooks"
+    assert_not_contains "$launch" "Claude Code has not loaded the instructions of this project" \
+      "claude $kind launch told the worker to read project instructions Claude Code loads itself"
     [ -f "$HOME_DIR/state/$id.status" ] || fail "claude $kind spawn did not create the status log its sandbox grant covers"
     [ ! -s "$HOME_DIR/state/$id.status" ] || fail "claude $kind spawn wrote into the status log"
     [ -d "$HOME_DIR/state/$id.inbox/handled" ] || fail "claude $kind spawn did not create the granted inbox"
@@ -1891,6 +1893,57 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
     rm -rf -- "/tmp/fm-$id"
   done
   pass "config/claude-sandbox=on fences claude ship and scout launches with exactly the task grant"
+}
+
+# Claude Code runs a project's settings hooks outside the sandbox, so a
+# sandboxed launch drops the project setting source exactly when the worktree's
+# tracked .claude/settings.json defines hooks, and then tells the worker to read
+# the project instructions Claude Code skips with that source; a project whose
+# settings define no hooks keeps every source.
+test_claude_sandbox_drops_only_hooked_project_settings() {
+  local project rec id out status launch settings
+  for project in hooked plain; do
+    id="sandbox-project-$project-z31"
+    rec=$(make_spawn_case "sandbox-project-$project" claude "$id")
+    read_case_record "$rec"
+    printf 'on\n' > "$HOME_DIR/config/claude-sandbox"
+    printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
+    # A ship launches from the project's default branch, so the settings are
+    # committed there and published to its origin.
+    mkdir -p "$PROJ_DIR/.claude"
+    if [ "$project" = hooked ]; then
+      printf '%s\n' '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"bin/project-stop.sh"}]}]}}' \
+        > "$PROJ_DIR/.claude/settings.json"
+    else
+      printf '%s\n' '{"permissions":{"allow":["Bash(make test)"]}}' > "$PROJ_DIR/.claude/settings.json"
+    fi
+    git -C "$PROJ_DIR" add .claude/settings.json
+    git -C "$PROJ_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+      commit -qm "project settings ($project)" || fail "could not commit the $project project settings"
+    git -C "$PROJ_DIR" push --quiet origin HEAD || fail "could not publish the $project project settings"
+
+    out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+    status=$?
+    expect_code 0 "$status" "claude spawn over $project project settings should succeed"$'\n'"$out"
+    launch=$(cat "$LAUNCH_LOG")
+    settings=$(claude_settings_json_arg "$launch") || fail "the $project launch carried no --settings JSON"$'\n'"$launch"
+    printf '%s' "$settings" | jq -e '.sandbox.enabled == true' >/dev/null \
+      || fail "the $project launch lost the sandbox"$'\n'"$settings"
+    [ -f "$WT_DIR/.claude/settings.json" ] || fail "the $project ship worktree did not carry the committed project settings"
+    if [ "$project" = hooked ]; then
+      assert_contains "$launch" "' --setting-sources user,local --settings '" \
+        "a sandboxed launch over hooked project settings did not drop the project setting source"
+      assert_contains "$launch" "authority absent from the brief. Claude Code has not loaded the instructions of this project for this session, so before starting the task read its CLAUDE.md, every file that CLAUDE.md imports (such as AGENTS.md), and the files under .claude/rules" \
+        "a worker launched without project settings was not told to read the project instructions"
+    else
+      assert_not_contains "$launch" "--setting-sources" \
+        "a sandboxed launch over project settings without hooks dropped a setting source"
+      assert_not_contains "$launch" "Claude Code has not loaded the instructions of this project" \
+        "a worker whose project settings load was told to read them itself"
+    fi
+    rm -rf -- "/tmp/fm-$id"
+  done
+  pass "config/claude-sandbox=on drops the project setting source only for hooked project settings"
 }
 
 test_claude_sandbox_invalid_refuses_before_endpoint_or_metadata() {
@@ -2041,6 +2094,7 @@ test_claude_permission_mode_invalid_refuses_before_endpoint_or_metadata
 test_non_claude_harness_ignores_claude_permission_mode
 test_claude_sandbox_off_matches_absent_launch
 test_claude_sandbox_on_fences_ship_and_scout_launches
+test_claude_sandbox_drops_only_hooked_project_settings
 test_claude_sandbox_invalid_refuses_before_endpoint_or_metadata
 test_claude_sandbox_refuses_without_auto_permission_mode
 test_claude_sandbox_refuses_raw_claude_command
