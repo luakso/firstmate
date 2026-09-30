@@ -340,7 +340,10 @@
 #   read the project instructions Claude then skips. Skipping that file also
 #   drops its narrowing rules (permissions.deny, sandbox.filesystem denyRead and
 #   denyWrite, sandbox.credentials deny entries, sandbox.network.deniedDomains),
-#   so a captain who relies on them restates them in user settings.
+#   so a captain who relies on them restates them in user settings. A sandboxed
+#   scout's launch brief replaces its captain-hold completion gate, whose
+#   backlog and task-record writes fall outside the fence, with an inventory
+#   firstmate turns into hold and complete (fm_brief_sandbox_scout_overlay).
 # Worker account pin (config/claude-account, config/pi-account):
 #   Opt-in. With no file, a Claude or Pi launch is unchanged: Claude still
 #   receives this process's own CLAUDE_CONFIG_DIR when it is set, and Pi the
@@ -2897,8 +2900,9 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
 # sandbox.network.deniedDomains) are dropped with it; they hold again only when
 # restated in user settings, since this worktree's settings.local.json is
 # Firstmate's and is rewritten at every launch.
-# The write grant is exactly what the brief tells the worker to
-# write outside its worktree: its status log (append; created here because a
+# The write grant is exactly what the launch brief tells the worker to
+# write outside its worktree (a sandboxed scout's brief hands its captain-hold
+# completion gate to firstmate instead): its status log (append; created here because a
 # grant cannot cover a file that does not exist at launch), its steering inbox
 # with handled/ moves, its data/<id> report directory, and the per-task temp
 # root that holds GOTMPDIR; plus the worker's own disk-backed Go build and
@@ -3188,6 +3192,9 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
       cat "$SOURCE_BRIEF" &&
       if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
         fm_brief_intent_overlay "$CAPTAIN_INTENT"
+      fi &&
+      if [ "$KIND" = scout ] && [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
+        fm_brief_sandbox_scout_overlay "$DATA" "$ID"
       fi
   } >"$BRIEF_TMP" || {
     rm -f -- "$BRIEF_TMP"

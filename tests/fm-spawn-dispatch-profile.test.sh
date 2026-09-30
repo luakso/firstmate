@@ -1813,6 +1813,22 @@ test_non_claude_harness_ignores_claude_permission_mode() {
 # absent file does, `on` adds only the sandbox member plus the per-task Go
 # caches to Claude crewmate and scout launches and requires auto mode, and
 # anything else refuses.
+# Only the sandbox changes a scout's completion gate: an unsandboxed Claude scout
+# still runs captain-hold-lifecycle's gate itself.
+test_claude_sandbox_off_keeps_the_scout_completion_gate() {
+  local rec id out status
+  id=sandbox-off-scout-z32
+  rec=$(make_spawn_case sandbox-off-scout claude "$id")
+  read_case_record "$rec"
+  printf 'off\n' > "$HOME_DIR/config/claude-sandbox"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --scout)
+  status=$?
+  expect_code 0 "$status" "claude scout spawn with claude-sandbox=off should succeed"$'\n'"$out"
+  assert_no_grep "# Captain questions under the Claude sandbox" "$HOME_DIR/data/$id/launch-brief.md" \
+    "an unsandboxed scout's launch brief replaced its captain-hold completion gate"
+  pass "config/claude-sandbox=off keeps a claude scout's own captain-hold completion gate"
+}
+
 test_claude_sandbox_off_matches_absent_launch() {
   local rec id out status launch expected
   id=sandbox-off-z24
@@ -1890,6 +1906,19 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
     [ -d "$HOME_DIR/state/$id.inbox/handled" ] || fail "claude $kind spawn did not create the granted inbox"
     [ -d "$HOME_DIR/state/$id.gocache/build" ] && [ -d "$HOME_DIR/state/$id.gocache/mod" ] || fail "claude $kind spawn did not create the Go cache directories"
     [ ! -e "/tmp/fm-$id/gocache" ] && [ ! -e "/tmp/fm-$id/gomodcache" ] || fail "claude $kind spawn still put Go caches in the memory-backed task temp root"
+    # The launch brief is the worker's delivered instruction record: a sandboxed
+    # scout hands its captain-hold completion gate to firstmate.
+    if [ "$kind" = scout ]; then
+      assert_grep "# Captain questions under the Claude sandbox" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed scout's launch brief did not replace its captain-hold completion gate"
+      assert_grep "never run \`fm-captain-hold.sh\`" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed scout's launch brief did not keep it from running fm-captain-hold.sh"
+      assert_grep "end \`$HOME_DIR/data/$id/report.md\` with a \`## Captain questions\` section" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed scout's launch brief did not name its report's captain-question inventory"
+    else
+      assert_no_grep "# Captain questions under the Claude sandbox" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed ship's launch brief carried the scout completion overlay"
+    fi
     rm -rf -- "/tmp/fm-$id"
   done
   pass "config/claude-sandbox=on fences claude ship and scout launches with exactly the task grant"
@@ -2096,6 +2125,7 @@ test_claude_worker_launch_covers_task_channel_dirs
 test_claude_permission_mode_invalid_refuses_before_endpoint_or_metadata
 test_non_claude_harness_ignores_claude_permission_mode
 test_claude_sandbox_off_matches_absent_launch
+test_claude_sandbox_off_keeps_the_scout_completion_gate
 test_claude_sandbox_on_fences_ship_and_scout_launches
 test_claude_sandbox_drops_committed_project_settings
 test_claude_sandbox_invalid_refuses_before_endpoint_or_metadata

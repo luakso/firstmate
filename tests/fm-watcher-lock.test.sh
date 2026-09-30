@@ -354,6 +354,34 @@ test_lock_single_winner_under_concurrency() {
   pass "concurrent fm_lock_try_acquire yields exactly one winner"
 }
 
+# A lock whose directory this process cannot write can never be created, as for
+# a Claude-sandboxed worker's read-only state/, so the blocking wait refuses at
+# once instead of spinning forever.
+test_lock_wait_fails_fast_in_unwritable_directory() {
+  local dir state lockdir rc out
+  dir=$(make_case lock-unwritable)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  chmod 0555 "$state"
+  if [ -w "$state" ]; then
+    chmod 0755 "$state"
+    pass "fm_lock_acquire_wait unwritable-directory case skipped: this user can write a 0555 directory"
+    return 0
+  fi
+  rc=0
+  out=$(. "$ROOT/bin/fm-timeout-lib.sh" && FM_STATE_OVERRIDE="$state" fm_run_timed 10 bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2"
+  ' _ "$LIB" "$lockdir" 2>&1) || rc=$?
+  chmod 0755 "$state"
+  [ "$rc" -eq 1 ] \
+    || fail "fm_lock_acquire_wait in an unwritable directory exited $rc instead of failing fast (124 or 137 means it spun until the bound)"$'\n'"$out"
+  assert_contains "$out" "cannot take lock $lockdir: its directory $state is not writable" \
+    "the fast failure did not name the lock and its unwritable directory"
+  [ ! -e "$lockdir" ] && [ ! -L "$lockdir" ] || fail "the refused wait left a lock behind"
+  pass "fm_lock_acquire_wait fails fast when the lock's directory is not writable"
+}
+
 test_lock_steals_dead_pid_lock() {
   local dir state lockdir dead rc newpid
   dir=$(make_case lock-dead-steal)
@@ -1558,6 +1586,7 @@ test_live_stale_watch_lock_is_actionable
 test_live_stalled_watch_lock_is_replaced_past_hard_bound
 test_guard_warnings
 test_lock_single_winner_under_concurrency
+test_lock_wait_fails_fast_in_unwritable_directory
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency
 test_lock_reclaims_dead_steal_owner_without_nested_markers
