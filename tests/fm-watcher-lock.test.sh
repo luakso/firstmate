@@ -369,6 +369,7 @@ test_lock_wait_fails_fast_in_unwritable_directory() {
     return 0
   fi
   rc=0
+  # shellcheck disable=SC2016 # $1 and $2 expand in the child shell.
   out=$(. "$ROOT/bin/fm-timeout-lib.sh" && FM_STATE_OVERRIDE="$state" fm_run_timed 10 bash -c '
     . "$1"
     fm_lock_acquire_wait "$2"
