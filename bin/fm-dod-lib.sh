@@ -242,11 +242,7 @@ This scout runs inside the Claude sandbox, where `fm-captain-hold.sh` cannot wri
 This section supersedes the Definition of done's instruction to pass the captain-hold completion gate yourself: never run `fm-captain-hold.sh`; firstmate runs its `hold` and `complete` steps for this task outside the fence.
 Still read `captain-hold-lifecycle` for what counts as a captain question, then inventory every unresolved one your report or any visual review raised.
 EOF
-  printf "Before reporting done, end \`%s/%s/report.md\` with a \`## Captain questions\` section that lists each such question with its options, or states that there are none.\n" "$1" "$2"
-  cat <<'EOF'
-When there is at least one, append one `needs-decision [at=<epoch>]: captain questions: {one-line summary of each}` line to your status file before your `done` line; do not wait for an answer, because firstmate carries those questions to the captain.
-When there are none, say so in your `done` line.
-EOF
+  printf "Before reporting done, end \`%s/%s/report.md\` with a \`## Captain questions\` section that lists each such question with its options, or states that there are none; firstmate reads that section to hold them for the captain.\n" "$1" "$2"
 }
 
 # Accept the current two-subsection contract only when both bodies have content;

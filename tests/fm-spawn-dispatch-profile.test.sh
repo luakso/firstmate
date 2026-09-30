@@ -1915,6 +1915,8 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
         "a sandboxed scout's launch brief did not keep it from running fm-captain-hold.sh"
       assert_grep "end \`$HOME_DIR/data/$id/report.md\` with a \`## Captain questions\` section" "$HOME_DIR/data/$id/launch-brief.md" \
         "a sandboxed scout's launch brief did not name its report's captain-question inventory"
+      assert_no_grep "captain questions:" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed scout's launch brief still routed captain questions through a status line its done line would clear"
     else
       assert_no_grep "# Captain questions under the Claude sandbox" "$HOME_DIR/data/$id/launch-brief.md" \
         "a sandboxed ship's launch brief carried the scout completion overlay"
