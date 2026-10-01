@@ -1,0 +1,30 @@
+# probe mode=inside-worker id=sbx3613a481-ship pid=4 date=2026-10-01T07:32:48+08:00
+env_view                   rc=0   PWD=/tmp/fmsbx.2L78tQ/treehouse/.treehouse/sbx-145326/1/sbx TMPDIR=/tmp/claude-1000 GOCACHE=/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.gocache/build GOMODCACHE=/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.gocache/mod GOTMPDIR=/tmp/fm-sb
+write_worktree             rc=0   in-worktree
+write_home                 rc=1   touch: cannot touch '/home/picasso/.fm-sbx-probe-sbx3613a481-ship': Read-only file system
+delete_sentinel            rc=0   rm: cannot remove '/tmp/fmsbx.2L78tQ/sentinel': Read-only file system sentinel-still-present
+write_lab_root             rc=1   touch: cannot touch '/tmp/fmsbx.2L78tQ/outside-write-sbx3613a481-ship-0': Read-only file system
+write_tmp_root             rc=1   touch: cannot touch '/tmp/fm-sbx-root-probe-sbx3613a481-ship-0': Read-only file system
+write_other_task_status    rc=1   bash: line 1: /tmp/fmsbx.2L78tQ/home/state/sbx3613a481-scout.status: Read-only file system
+write_own_meta             rc=1   bash: line 1: /tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.meta: Read-only file system
+write_op_inbox             rc=1   touch: cannot touch '/tmp/fmsbx.2L78tQ/home/state/operational-inbox/probe-sbx3613a481-ship': Read-only file system
+write_skills               rc=1   touch: cannot touch '/tmp/fmsbx.2L78tQ/home/.agents/skills/probe-sbx3613a481-ship': Read-only file system
+append_own_status          rc=0   appended-own-status
+write_own_data             rc=0   wrote-own-data
+inbox_handled              rc=0   wrote-inbox-handled
+write_task_tmp             rc=0   wrote-task-tmp /tmp/fm-sbx3613a481-ship
+unix_socket_lab            rc=1   2026/10/01 07:32:48 socat[104] E socket(1, 1, 0): Operation not permitted
+tmux_lab_socket            rc=1   error connecting to /tmp/fml.5FWjyI/tmux-1000/default (Operation not permitted)
+dbus_session               rc=0   Failed to connect to user scope bus via local transport: Operation not permitted (consider using --machine=<user>@.host --user to connect to bus of other user)
+docker_socket              rc=7   curl: (7) Failed to connect to d:80 over unix:///var/run/docker.sock after 0 ms: Could not connect to server
+gh_in_fence                rc=0   github.com   X Failed to log in to github.com account luakso (default)   - Active account: true
+git_push_in_fence          rc=1   error: remote unpack failed: unable to create temporary object directory To /tmp/fmsbx.2L78tQ/origins/probe.git  ! [remote rejected] HEAD -> infence-sbx3613a481-ship-0 (unpacker error) error: failed to push some refs to '/tmp/fmsbx.2L78tQ/o
+net_example                rc=7   curl: (7) CONNECT tunnel failed, response 403 000
+net_github_api             rc=7   curl: (7) CONNECT tunnel failed, response 403 000
+net_goproxy                rc=0   200
+go_env                     rc=0   /tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.gocache/build /tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.gocache/mod /tmp/fm-sbx3613a481-ship/gotmp
+go_build                   rc=0   go: downloading rsc.io/quote v1.5.2 go: downloading rsc.io/sampler v1.3.0 go: downloading golang.org/x/text v0.0.0-20170915032832-14c0d48ead0c sbx build ok: Hello, world.
+go_modcache_ro             rc=0   dr-xr-xr-x 3 picasso picasso 160 Oct  1 07:32 /tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.gocache/mod/rsc.io/quote@v1.5.2 0
+git_commit                 rc=0   b392641 sandbox probe
+fleet_ledger_failfast      rc=0   error: cannot take lock /tmp/fmsbx.2L78tQ/home/state/.fleet-ledger.lock: its directory /tmp/fmsbx.2L78tQ/home/state is not writable by this process ledger_rc=1 elapsed_ms=16
+# probe end

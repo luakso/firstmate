@@ -1,0 +1,34 @@
+# scout completion handoff + teardown (firstmate side, outside the fence)
+## report tail (worker-written):
+## Captain questions
+
+None. No decision is owed to the captain from this run — all specified commands were executed once each, exactly as instructed, and results were reported; no further action was taken.
+
+$ fm-teardown.sh sbx3613a481-scout   (before firstmate completes the gate)
+fm-captain-hold: origin sbx3613a481-scout has no completed captain-call inventory
+REFUSED: scout task sbx3613a481-scout has not passed the captain-call completion gate.
+Inventory its report and any visual review through bin/fm-captain-hold.sh before teardown.
+exit=1
+
+$ fm-captain-hold.sh complete sbx3613a481-scout --none
+complete: sbx3613a481-scout captain-call inventory reviewed
+$ fm-captain-hold.sh verify sbx3613a481-scout
+verified: sbx3613a481-scout captain-call inventory
+verify exit=0
+
+state/sbx3613a481-scout.gocache before teardown:
+drwxr-xr-x  4 picasso picasso  80 Oct  1 07:32 .
+drwxr-xr-x 12 picasso picasso 700 Oct  1 07:36 ..
+drwxr-xr-x  2 picasso picasso  40 Oct  1 07:32 build
+drwxr-xr-x  2 picasso picasso  40 Oct  1 07:32 mod
+$ fm-teardown.sh sbx3613a481-scout
+exit=0
+teardown: reaping leaked worktree process group for sbx3613a481-scout: 706649
+teardown: force-killing leaked worktree process group for sbx3613a481-scout: 706649
+🌳 Terminated lingering processes: bash (706846), claude (708900)
+🌳 Worktree returned to pool.
+teardown sbx3613a481-scout complete (window firstmate:fm-sbx3613a481-scout, worktree /tmp/fmsbx.2L78tQ/treehouse/.treehouse/sbxcfg-d32173/1/sbxcfg)
+Backlog: sbx3613a481-scout is closed in /tmp/fmsbx.2L78tQ/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+state/sbx3613a481-scout.gocache after teardown: removed
+state/sbx3613a481-scout.meta after teardown: removed
+scout window after teardown: 0

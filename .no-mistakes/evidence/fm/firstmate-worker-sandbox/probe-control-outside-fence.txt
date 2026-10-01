@@ -1,0 +1,26 @@
+# probe mode=control-outside-fence id=control-x pid=727025 date=2026-10-01T07:32:55+08:00
+env_view                   rc=0   PWD=/tmp/fmsbx.2L78tQ/control/clone TMPDIR= GOCACHE= GOMODCACHE= GOTMPDIR=/tmp/fmsbx.2L78tQ/control/gotmp-root/gotmp
+write_worktree             rc=0   in-worktree
+write_lab_root             rc=0   WROTE-LAB-ROOT
+write_tmp_root             rc=0   WROTE-TMP-ROOT
+write_other_task_status    rc=0   WROTE-OTHER-STATUS
+write_own_meta             rc=0   WROTE-OWN-META
+write_op_inbox             rc=0   WROTE-OP-INBOX
+write_skills               rc=0   WROTE-SKILLS
+append_own_status          rc=0   appended-own-status
+write_own_data             rc=0   wrote-own-data
+inbox_handled              rc=0   wrote-inbox-handled
+write_task_tmp             rc=0   wrote-task-tmp /tmp/fmsbx.2L78tQ/control/gotmp-root
+unix_socket_lab            rc=1   2026/10/01 07:32:55 socat[727136] E connect(, AF=1 "/tmp/fmsbx.2L78tQ/control/probe.sock", 38): No such file or directory
+tmux_lab_socket            rc=0   firstmate: 4 windows (created Thu Oct  1 07:30:57 2026) CONNECTED
+dbus_session               rc=0   NAME                                               PID PROCESS         USER    CONNECTION    UNIT              SESSION DESCRIPTION :1.0                                              1206 gnome-keyring-d picasso :1.0          user@1000.servic
+docker_socket              rc=7   curl: (7) Failed to connect to d:80 over unix:///var/run/docker.sock after 0 ms: Could not connect to server
+gh_in_fence                rc=0   github.com   ✓ Logged in to github.com account luakso (keyring)   - Active account: true
+git_push_in_fence          rc=0   To /tmp/fmsbx.2L78tQ/origins/probe.git  * [new branch]      HEAD -> infence-control-x-1 PUSHED
+net_example                rc=0   200
+net_github_api             rc=0   200
+net_goproxy                rc=0   200
+# probe end
+# control addendum (outside fence): lab socket at the real path, and docker errno
+unix_socket_lab(real path) rc=0 CONNECTED
+docker_socket(socat)       rc=1 2026/10/01 07:33:05 socat[731035] E connect(, AF=1 "/var/run/docker.sock", 22): Permission denied

@@ -1,0 +1,48 @@
+=== config/claude-sandbox='yes' (invalid token)
+$ fm-spawn.sh sbx3613a481-badtoken /tmp/fmsbx.2L78tQ/home/projects/sbx --mode local-only --yolo on --harness claude
+exit=1
+error: config/claude-sandbox holds 'yes'; accepted values are: on (Claude crewmates and scouts run Bash inside Claude Code's sandbox), off (no sandbox, the default when the file is absent)
+state/sbx3613a481-badtoken.meta: absent
+/tmp/fm-sbx3613a481-badtoken: absent
+tmux windows now: lab sock 
+
+=== claude-sandbox=on, claude-permission-mode absent
+$ fm-spawn.sh sbx3613a481-noauto /tmp/fmsbx.2L78tQ/home/projects/sbx --mode local-only --yolo on --harness claude
+exit=1
+error: config/claude-sandbox is on but config/claude-permission-mode resolves to 'bypass'; the sandbox requires auto, because the commands it runs outside the fence (git push, gh, gh-axi, no-mistakes) and Claude's file tools are reviewed only by auto mode's classifier; write auto to config/claude-permission-mode, or off to config/claude-sandbox
+state/sbx3613a481-noauto.meta: absent
+/tmp/fm-sbx3613a481-noauto: absent
+tmux windows now: lab sock 
+
+=== claude-sandbox=on, claude-permission-mode=bypass
+$ fm-spawn.sh sbx3613a481-bypass /tmp/fmsbx.2L78tQ/home/projects/sbx --mode local-only --yolo on --harness claude
+exit=1
+error: config/claude-sandbox is on but config/claude-permission-mode resolves to 'bypass'; the sandbox requires auto, because the commands it runs outside the fence (git push, gh, gh-axi, no-mistakes) and Claude's file tools are reviewed only by auto mode's classifier; write auto to config/claude-permission-mode, or off to config/claude-sandbox
+state/sbx3613a481-bypass.meta: absent
+/tmp/fm-sbx3613a481-bypass: absent
+tmux windows now: lab sock 
+
+=== Claude ship on forge=gerrit project with sandbox on
+$ fm-spawn.sh sbx3613a481-gerrit /tmp/fmsbx.2L78tQ/home/projects/sbxgerrit --mode no-mistakes --yolo off --harness claude
+exit=1
+error: sbx3613a481-gerrit cannot launch in the Claude sandbox: sbxgerrit is registered forge=gerrit, whose worker must itself run git fetch and gerrit-axi publish, and config/claude-sandbox=on fences both away from the Gerrit host and the git credentials; spawn it with a non-Claude harness, or write off to config/claude-sandbox
+state/sbx3613a481-gerrit.meta: absent
+/tmp/fm-sbx3613a481-gerrit: absent
+tmux windows now: lab sock 
+
+=== Claude scout whose brief carries --herdr-lab, sandbox on
+$ fm-spawn.sh sbx3613a481-herdrlab /tmp/fmsbx.2L78tQ/home/projects/sbx --scout --harness claude
+exit=1
+error: sbx3613a481-herdrlab cannot launch in the Claude sandbox: /tmp/fmsbx.2L78tQ/home/data/sbx3613a481-herdrlab/brief.md was scaffolded with --herdr-lab, whose worker must itself drive Herdr and tmux lab sessions through their Unix sockets, and config/claude-sandbox=on refuses every socket connect; spawn it with a non-Claude harness, or write off to config/claude-sandbox
+state/sbx3613a481-herdrlab.meta: absent
+/tmp/fm-sbx3613a481-herdrlab: absent
+tmux windows now: lab sock 
+
+=== raw 'claude --model sonnet' launch command, sandbox on
+$ fm-spawn.sh sbx3613a481-raw /tmp/fmsbx.2L78tQ/home/projects/sbx --mode local-only --yolo on claude --model sonnet
+exit=1
+error: config/claude-sandbox is on, and a raw claude launch command cannot carry the sandbox settings; launch through the claude harness instead
+state/sbx3613a481-raw.meta: absent
+/tmp/fm-sbx3613a481-raw: absent
+tmux windows now: lab sock 
+

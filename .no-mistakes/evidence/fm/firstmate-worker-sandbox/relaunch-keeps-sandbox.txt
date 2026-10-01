@@ -1,0 +1,7 @@
+# fm-control.sh sbx3613a481-ship relaunch -> relaunched sbx3613a481-ship harness=claude from=claude model=sonnet effort=low backend=tmux endpoint=firstmate:fm-sbx3613a481-ship worktree=/tmp/fmsbx.2L78tQ/treehouse/.treehouse/sbx-145326/1/sbx
+# old claude pid 700439 alive after relaunch: no; new claude pid 789146
+# new process argv --settings sandbox member + env:
+{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"excludedCommands":["git push","git push *","gh","gh *","gh-axi","gh-axi *","no-mistakes","no-mistakes *"],"filesystem":{"allowWrite":["/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.status","/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.inbox","/tmp/fmsbx.2L78tQ/home/data/sbx3613a481-ship","/tmp/fm-sbx3613a481-ship","/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.gocache"],"denyWrite":["/tmp/fmsbx.2L78tQ/home/state/operational-inbox","/tmp/fmsbx.2L78tQ/home/.agents/skills"]},"network":{"strictAllowlist":true,"allowedDomains":["proxy.golang.org","sum.golang.org"]}}
+--permission-mode auto 
+GOMODCACHE=/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.gocache/mod
+GOCACHE=/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.gocache/build

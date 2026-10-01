@@ -1,0 +1,10 @@
+Step 2: gh auth status
+exit status: 0
+github.com
+  ✓ Logged in to github.com account luakso (keyring)
+  - Active account: true
+
+Step 3: git push probe HEAD:refs/heads/probe-sbx3613a481-ship
+exit status: N/A (command was not executed; denied pre-execution)
+Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Data Exfiltration].
+(Note: this is a classifier-level denial, not a sandbox network-fence denial like step 1's probe.sh result.)

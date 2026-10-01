@@ -1,0 +1,10 @@
+# lab primary started per the runbook (claude on the lab tmux socket, FM_HOME=lab) while config/claude-sandbox=on
+config/claude-sandbox: on
+primary process:  920289 claude --model sonnet --effort low --permission-mode auto
+primary argv carries a sandbox member: 0
+# primary pane (tmux capture) after asking it to run tmux list-sessions (a Unix-socket connect the fence refuses with EPERM):
+● Bash(tmux list-sessions)
+  ⎿  firstmate: 5 windows (created Thu Oct  1 07:30:57 2026)
+  ⎿  Allowed by auto mode classifier
+# for contrast, the same socket from inside the fenced ship worker (probe.txt):
+tmux_lab_socket            rc=1   error connecting to /tmp/fml.5FWjyI/tmux-1000/default (Operation not permitted)

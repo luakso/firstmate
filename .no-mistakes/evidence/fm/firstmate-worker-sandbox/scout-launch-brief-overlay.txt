@@ -1,0 +1,5 @@
+# Captain questions under the Claude sandbox
+This scout runs inside the Claude sandbox, where `fm-captain-hold.sh` cannot write the backlog or this task's record.
+This section supersedes the Definition of done's instruction to pass the captain-hold completion gate yourself: never run `fm-captain-hold.sh`; firstmate runs its `hold` and `complete` steps for this task outside the fence.
+Still read `captain-hold-lifecycle` for what counts as a captain question, then inventory every unresolved one your report or any visual review raised.
+Before reporting done, end `/tmp/fmsbx.2L78tQ/home/data/sbx3613a481-scout/report.md` with a `## Captain questions` section that lists each such question with its options, or states that there are none; firstmate reads that section to hold them for the captain.

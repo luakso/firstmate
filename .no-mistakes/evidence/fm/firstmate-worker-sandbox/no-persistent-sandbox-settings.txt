@@ -1,0 +1,5 @@
+# persistent Claude settings after all lab launches (the fence is per-launch --settings only)
+/tmp/fmsbx.2L78tQ/home/.claude/settings.json: sandbox keys=0
+/tmp/fmsbx.2L78tQ/home/.claude/settings.local.json: absent
+/home/picasso/.claude/settings.json: sandbox keys=0
+/home/picasso/.claude/settings.local.json: absent

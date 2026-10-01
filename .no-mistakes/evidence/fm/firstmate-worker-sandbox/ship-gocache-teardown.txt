@@ -1,0 +1,12 @@
+# ship sbx3613a481-ship: Go caches written inside the fence, then firstmate teardown (lab discard, --force because a local-only ship's branch was never merged)
+## state/sbx3613a481-ship.gocache before teardown:
+files: 1221; read-only dirs (Go extracts modules read-only): 61
+dr-xr-xr-x 3 picasso picasso 160 Oct  1 07:32 /tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.gocache/mod/rsc.io/quote@v1.5.2
+$ fm-teardown.sh sbx3613a481-ship --force
+exit=0
+teardown: force-killing leaked worktree process group for sbx3613a481-ship: 698007
+🌳 Terminated lingering processes: bash (698197), claude (789146)
+🌳 Worktree returned to pool.
+teardown sbx3613a481-ship complete (window firstmate:fm-sbx3613a481-ship, worktree /tmp/fmsbx.2L78tQ/treehouse/.treehouse/sbx-145326/1/sbx)
+Backlog: sbx3613a481-ship is closed in /tmp/fmsbx.2L78tQ/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+state/sbx3613a481-ship.gocache after teardown: removed

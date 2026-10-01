@@ -1,0 +1,8 @@
+# Claude scout sbx3613a481-off spawned with config/claude-sandbox ABSENT (config/claude-permission-mode=auto)
+spawned sbx3613a481-off harness=claude kind=scout window=firstmate:fm-sbx3613a481-off worktree=/tmp/fmsbx.2L78tQ/treehouse/.treehouse/sbx-145326/1/sbx
+claude pid=906468 --settings: {"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false}}
+argv has --setting-sources: 0
+env GOCACHE/GOMODCACHE overridden: 0
+state/sbx3613a481-off.gocache exists: no
+launch brief carries the sandbox captain-questions overlay: 0
+launch brief keeps the scout's own completion gate line: 1 (sandboxed scout sbx3613a481-scout's launch brief carried the overlay superseding it instead)

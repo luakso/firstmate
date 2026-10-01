@@ -1,0 +1,123 @@
+===== sbx3613a481-ship: live claude worker process (argv from /proc/<pid>/cmdline, prompts elided)
+  argv[0] /home/picasso/.local/share/mise/installs/claude/latest/claude
+  argv[1] --permission-mode
+  argv[2] auto
+  argv[3] --add-dir
+  argv[4] /tmp/fmsbx.2L78tQ/home/state/operational-inbox
+  argv[5] --add-dir
+  argv[6] /tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.inbox
+  argv[7] --add-dir
+  argv[8] /tmp/fmsbx.2L78tQ/home/data/sbx3613a481-ship
+  argv[9] --add-dir
+  argv[10] /tmp/fmsbx.2L78tQ/home/.agents/skills
+  argv[11] --settings
+  argv[12] {"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false},"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"excludedCommands":["git push","git push *","gh","gh *","gh-axi","gh-axi *","no-mistakes","no-mistakes *"],"filesystem":{"allowWrite":["/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.status","/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship....
+  argv[13] --append-system-prompt
+  argv[15] --model
+  --settings JSON (pretty):
+    {
+      "feedbackDrafts": "off",
+      "attribution": {
+        "commit": "",
+        "pr": "",
+        "sessionUrl": false
+      },
+      "sandbox": {
+        "enabled": true,
+        "failIfUnavailable": true,
+        "allowUnsandboxedCommands": false,
+        "excludedCommands": [
+          "git push",
+          "git push *",
+          "gh",
+          "gh *",
+          "gh-axi",
+          "gh-axi *",
+          "no-mistakes",
+          "no-mistakes *"
+        ],
+        "filesystem": {
+          "allowWrite": [
+            "/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.status",
+            "/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.inbox",
+            "/tmp/fmsbx.2L78tQ/home/data/sbx3613a481-ship",
+            "/tmp/fm-sbx3613a481-ship",
+            "/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-ship.gocache"
+          ],
+          "denyWrite": [
+            "/tmp/fmsbx.2L78tQ/home/state/operational-inbox",
+            "/tmp/fmsbx.2L78tQ/home/.agents/skills"
+          ]
+        },
+        "network": {
+          "strictAllowlist": true,
+          "allowedDomains": [
+            "proxy.golang.org",
+            "sum.golang.org"
+          ]
+        }
+      }
+    }
+  append-system-prompt mentions project instructions: 0
+===== sbx3613a481-scout: live claude worker process (argv from /proc/<pid>/cmdline, prompts elided)
+  argv[0] /home/picasso/.local/share/mise/installs/claude/latest/claude
+  argv[1] --permission-mode
+  argv[2] auto
+  argv[3] --add-dir
+  argv[4] /tmp/fmsbx.2L78tQ/home/state/operational-inbox
+  argv[5] --add-dir
+  argv[6] /tmp/fmsbx.2L78tQ/home/state/sbx3613a481-scout.inbox
+  argv[7] --add-dir
+  argv[8] /tmp/fmsbx.2L78tQ/home/data/sbx3613a481-scout
+  argv[9] --add-dir
+  argv[10] /tmp/fmsbx.2L78tQ/home/.agents/skills
+  argv[11] --setting-sources
+  argv[12] user,local
+  argv[13] --settings
+  argv[14] {"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false},"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"excludedCommands":["git push","git push *","gh","gh *","gh-axi","gh-axi *","no-mistakes","no-mistakes *"],"filesystem":{"allowWrite":["/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-scout.status","/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-scou...
+  argv[15] --append-system-prompt
+  --settings JSON (pretty):
+    {
+      "feedbackDrafts": "off",
+      "attribution": {
+        "commit": "",
+        "pr": "",
+        "sessionUrl": false
+      },
+      "sandbox": {
+        "enabled": true,
+        "failIfUnavailable": true,
+        "allowUnsandboxedCommands": false,
+        "excludedCommands": [
+          "git push",
+          "git push *",
+          "gh",
+          "gh *",
+          "gh-axi",
+          "gh-axi *",
+          "no-mistakes",
+          "no-mistakes *"
+        ],
+        "filesystem": {
+          "allowWrite": [
+            "/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-scout.status",
+            "/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-scout.inbox",
+            "/tmp/fmsbx.2L78tQ/home/data/sbx3613a481-scout",
+            "/tmp/fm-sbx3613a481-scout",
+            "/tmp/fmsbx.2L78tQ/home/state/sbx3613a481-scout.gocache"
+          ],
+          "denyWrite": [
+            "/tmp/fmsbx.2L78tQ/home/state/operational-inbox",
+            "/tmp/fmsbx.2L78tQ/home/.agents/skills"
+          ]
+        },
+        "network": {
+          "strictAllowlist": true,
+          "allowedDomains": [
+            "proxy.golang.org",
+            "sum.golang.org"
+          ]
+        }
+      }
+    }
+  append-system-prompt mentions project instructions: 1

@@ -1,0 +1,36 @@
+# sandboxed direct-PR ship sbx3613a481-push: excluded commands under auto mode (pane excerpt, tmux capture)
+● Bash(git push origin fm/sbx3613a481-push 2>&1)
+  ⎿  To /tmp/fmsbx.2L78tQ/origins/sbx.git
+      * [new branch]      fm/sbx3613a481-push -> fm/sbx3613a481-push
+  ⎿  Allowed by auto mode classifier
+● Bash(gh-axi pr create --title "Add sandbox lab push check line to README" --body "Adds the required 'Sandbox lab push check.' line to README.md." --head fm/sbx3613a4…)
+  ⎿  Error: Exit code 2
+     error: Could not determine the target repository from this checkout's git remotes
+     code: VALIDATION_ERROR
+     help[2]: "Pass the repo explicitly: `-R <owner>/<name>` (after the command)","For a GitHub Enterprise host, add `--hostname <host>` or set GH_HOST"
+
+# refs now in the lab origin /tmp/fmsbx.2L78tQ/origins/sbx.git (outside the worker's write grant):
+refs/heads/fm/sbx3613a481-push 68ff90c Add sandbox lab push check line to README
+refs/heads/main d44db84 seed sbx
+
+# worker status log:
+working [at=1790811328]: committed README change on fm/sbx3613a481-push
+blocked [at=1790811341]: gh-axi pr create failed: "error: Could not determine the target repository from this checkout's git remotes" (origin not hosted on GitHub)
+
+# for contrast, the in-fence push from probe.sh (ship sbx3613a481-ship):
+git_push_in_fence          rc=1   error: remote unpack failed: unable to create temporary object directory To /tmp/fmsbx.2L78tQ/origins/probe.git  ! [remote rejected] HEAD -> infence-sbx3613a481-ship-0 (unpacker error) error: failed to push some refs to '/tmp/fmsbx.2L78tQ/o
+
+# gh auth status: in-fence (probe.sh) vs excluded Bash call by ship sbx3613a481-ship (worker-written excluded.txt)
+gh_in_fence                rc=0   github.com   X Failed to log in to github.com account luakso (default)   - Active account: true
+Step 2: gh auth status
+exit status: 0
+github.com
+  ✓ Logged in to github.com account luakso (keyring)
+  - Active account: true
+
+
+# the ship's own 'git push probe ...' was denied by the auto mode classifier (worker-written):
+Step 3: git push probe HEAD:refs/heads/probe-sbx3613a481-ship
+exit status: N/A (command was not executed; denied pre-execution)
+Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Data Exfiltration].
+(Note: this is a classifier-level denial, not a sandbox network-fence denial like step 1's probe.sh result.)
