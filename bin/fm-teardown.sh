@@ -3304,7 +3304,8 @@ cleanup_firstmate_home_children() {
       "$sub_state/$child_id.devin-config.json" \
       "$sub_state/.$child_id.branch-outcome-index"
     chmod u+w "$sub_state/$child_id.git-hooks" 2>/dev/null || true
-    rm -rf "$sub_state/$child_id.git-hooks"
+    chmod -R u+w "$sub_state/$child_id.gocache" 2>/dev/null || true
+    rm -rf "$sub_state/$child_id.git-hooks" "$sub_state/$child_id.gocache"
   done
 }
 
@@ -3781,9 +3782,11 @@ rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.progress" \
 # retired endpoint; teardown only runs after landing is confirmed, so any
 # leftover unhandled steer here is moot rather than unlanded work.
 # state/<id>.git-hooks is the spawn-owned commit-msg strip directory, left
-# read-only by its installer.
+# read-only by its installer. state/<id>.gocache holds a sandboxed Claude
+# worker's Go caches, whose modules Go extracts as read-only trees.
 chmod u+w "$STATE/$ID.git-hooks" 2>/dev/null || true
-rm -rf "$STATE/$ID.inbox" "$STATE/$ID.git-hooks"
+chmod -R u+w "$STATE/$ID.gocache" 2>/dev/null || true
+rm -rf "$STATE/$ID.inbox" "$STATE/$ID.git-hooks" "$STATE/$ID.gocache"
 # A presentation journal the close path left behind is orphaned once the
 # recorded pane is proven gone (the Herdr gate above) unless it still names a
 # live projected workspace - a version 2 binding of some other pane, or a

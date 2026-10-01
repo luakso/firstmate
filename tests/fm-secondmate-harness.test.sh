@@ -1044,7 +1044,7 @@ new_world() {
     [ "$dispatch_ignore" = no ] || printf 'config/crew-dispatch.json\n'
     printf 'config/crew-harness\nconfig/secondmate-harness\nconfig/backlog-backend\n'
     printf 'config/backend\nconfig/herdr-presentation-spaces\nconfig/startup-memory-budget\n'
-    printf 'config/claude-permission-mode\n'
+    printf 'config/claude-permission-mode\nconfig/claude-sandbox\n'
   } > "$w/main/.gitignore"
   printf 'v1\n' > "$w/main/AGENTS.md"
   printf 'r1\n' > "$w/main/README.md"
@@ -1517,6 +1517,28 @@ test_claude_permission_mode_inheritance_present_and_absent() {
   expect_code 0 "$status" "claude-permission-mode absence push should succeed"
   [ -e "$w/sm/config/claude-permission-mode" ] && fail "claude-permission-mode not removed on primary absence"
   pass "B12c claude-permission-mode inheritance: present values and primary absence converge exactly"
+}
+
+# config/claude-sandbox is the same kind of captain-wide safety preference, so
+# a secondmate's own Claude crewmates and scouts are fenced too.
+test_claude_sandbox_inheritance_present_and_absent() {
+  local w head out err status
+  w=$(new_world sandbox-inherit)
+  head=$(git -C "$w/main" rev-parse HEAD)
+  add_sm_worktree "$w" sm "$head"
+
+  printf 'on\n' > "$w/home/config/claude-sandbox"
+  err="$w/sandbox-inherit.err"
+  out=$(run_config_push "$w" 2>"$err"); status=$?
+  expect_code 0 "$status" "claude-sandbox present push should succeed"
+  assert_contains "$out" "claude-sandbox: pushed" "present value should report pushed"
+  [ "$(cat "$w/sm/config/claude-sandbox")" = on ] || fail "claude-sandbox present value not pushed"
+
+  rm -f "$w/home/config/claude-sandbox"
+  out=$(run_config_push "$w" 2>"$err"); status=$?
+  expect_code 0 "$status" "claude-sandbox absence push should succeed"
+  [ -e "$w/sm/config/claude-sandbox" ] && fail "claude-sandbox not removed on primary absence"
+  pass "B12c claude-sandbox inheritance: present values and primary absence converge exactly"
 }
 
 test_backend_inheritance_present_and_absent() {
@@ -2721,6 +2743,7 @@ test_backend_inheritance_present_and_absent
 test_spawn_secondmate_claude_permission_mode_auto
 test_spawn_secondmate_claude_grants_parent_inbox_dir
 test_claude_permission_mode_inheritance_present_and_absent
+test_claude_sandbox_inheritance_present_and_absent
 test_presentation_inheritance_default_on_and_opt_out
 test_bootstrap_sweep_surfaces_config_propagation_failure
 test_bootstrap_rereads_after_partial_propagation

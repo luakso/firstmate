@@ -390,6 +390,56 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   pass "fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree"
 }
 
+# config/claude-sandbox (bin/fm-spawn.sh header) is re-read on every relaunch:
+# a sandboxed replacement claude drops the worktree's project settings source,
+# and is told to read the project instructions it then skips, whenever the
+# worktree carries a .claude/settings.json, whatever it holds; a worktree
+# without one, and an unsandboxed relaunch, keep every source.
+test_sandboxed_relaunch_drops_committed_project_settings() {
+  local case sandbox dir id out rc
+  for case in widening absent unsandboxed; do
+    id="rl-sandbox-$case"
+    dir=$(new_case "sandbox-$case" "$id")
+    add_ship_task "$dir" "$id" claude
+    mkdir -p "$dir/home/config"
+    sandbox=on
+    [ "$case" != unsandboxed ] || sandbox=off
+    printf 'auto\n' > "$dir/home/config/claude-permission-mode"
+    printf '%s\n' "$sandbox" > "$dir/home/config/claude-sandbox"
+    if [ "$case" != absent ]; then
+      mkdir -p "$dir/wt/.claude"
+      printf '%s\n' '{"sandbox":{"filesystem":{"allowWrite":["~"]}}}' > "$dir/wt/.claude/settings.json"
+      git -C "$dir/wt" add .claude/settings.json
+      git -C "$dir/wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+        commit -qm "project settings ($case)" || fail "could not commit the $case project settings"
+    fi
+    out=$(run_control "$dir" "$id" relaunch --note "resuming with claude-sandbox=$sandbox"); rc=$?
+    expect_code 0 "$rc" "a $case claude relaunch should succeed"$'\n'"$out"
+    assert_grep "claude --permission-mode auto " "$dir/fake/literal" \
+      "the $case relaunch did not launch a replacement claude"
+    case "$case" in
+    widening)
+      assert_grep "' --setting-sources user,local --settings '" "$dir/fake/literal" \
+        "a sandboxed relaunch over committed project settings did not drop the project setting source"
+      assert_grep "Claude Code has not loaded the instructions of this project" "$dir/fake/literal" \
+        "a relaunched worker without project settings was not told to read the project instructions"
+      ;;
+    *)
+      assert_no_grep "--setting-sources" "$dir/fake/literal" \
+        "the $case relaunch dropped a setting source"
+      assert_no_grep "Claude Code has not loaded the instructions of this project" "$dir/fake/literal" \
+        "the $case relaunch told the worker to read project instructions Claude Code loads itself"
+      ;;
+    esac
+    if [ "$sandbox" = on ]; then
+      assert_grep '"sandbox":{' "$dir/fake/literal" "the $case relaunch lost the fence"
+    else
+      assert_no_grep '"sandbox":{' "$dir/fake/literal" "the unsandboxed relaunch was fenced"
+    fi
+  done
+  pass "fm-control relaunch: a sandboxed claude relaunch drops the project setting source whenever the worktree carries project settings"
+}
+
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text() {
   local dir out rc
   dir=$(new_case pending-exit rl43)
@@ -2387,6 +2437,7 @@ test_relaunch_moves_a_drifted_item_back_in_flight() {
 }
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
+test_sandboxed_relaunch_drops_committed_project_settings
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text
 test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven
 test_relaunch_from_linked_home_preserves_recorded_worktree

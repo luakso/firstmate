@@ -1809,6 +1809,271 @@ test_non_claude_harness_ignores_claude_permission_mode() {
   pass "config/claude-permission-mode changes claude launches only"
 }
 
+# config/claude-sandbox (bin/fm-spawn.sh header): `off` launches exactly as an
+# absent file does, `on` adds only the sandbox member plus the per-task Go
+# caches to Claude crewmate and scout launches and requires auto mode, and
+# anything else refuses.
+# Only the sandbox changes a scout's completion gate: an unsandboxed Claude scout
+# still runs captain-hold-lifecycle's gate itself.
+test_claude_sandbox_off_keeps_the_scout_completion_gate() {
+  local rec id out status
+  id=sandbox-off-scout-z32
+  rec=$(make_spawn_case sandbox-off-scout claude "$id")
+  read_case_record "$rec"
+  printf 'off\n' > "$HOME_DIR/config/claude-sandbox"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --scout)
+  status=$?
+  expect_code 0 "$status" "claude scout spawn with claude-sandbox=off should succeed"$'\n'"$out"
+  assert_no_grep "# Captain questions under the Claude sandbox" "$HOME_DIR/data/$id/launch-brief.md" \
+    "an unsandboxed scout's launch brief replaced its captain-hold completion gate"
+  pass "config/claude-sandbox=off keeps a claude scout's own captain-hold completion gate"
+}
+
+test_claude_sandbox_off_matches_absent_launch() {
+  local rec id out status launch expected
+  id=sandbox-off-z24
+  rec=$(make_spawn_case sandbox-off claude "$id")
+  read_case_record "$rec"
+  printf 'off\n' > "$HOME_DIR/config/claude-sandbox"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "claude spawn with claude-sandbox=off should succeed"$'\n'"$out"
+  launch=$(cat "$LAUNCH_LOG")
+  expected=$(claude_expected_launch "$launch" "$HOME_DIR" "$id" --dangerously-skip-permissions)
+  [ "$launch" = "$expected" ] || fail "claude-sandbox=off changed the launch"$'\n'"expected: $expected"$'\n'"actual:   $launch"
+  pass "config/claude-sandbox=off launches exactly as an absent file does"
+}
+
+test_claude_sandbox_on_fences_ship_and_scout_launches() {
+  local kind rec id out status launch settings state_real data_real tmp_real root_real want dir granted
+  for kind in ship scout; do
+    id="sandbox-on-$kind-z25"
+    rec=$(make_spawn_case "sandbox-on-$kind" claude "$id")
+    read_case_record "$rec"
+    # Surrounding whitespace is trimmed, like config/claude-permission-mode.
+    printf '  on\n' > "$HOME_DIR/config/claude-sandbox"
+    printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
+    assert_absent "$HOME_DIR/state/$id.status" "the status log must not pre-exist the spawn"
+
+    if [ "$kind" = ship ]; then
+      out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+    else
+      out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --scout)
+    fi
+    status=$?
+    expect_code 0 "$status" "claude $kind spawn with claude-sandbox=on should succeed"$'\n'"$out"
+    launch=$(cat "$LAUNCH_LOG")
+    settings=$(claude_settings_json_arg "$launch") || fail "claude $kind launch carried no --settings JSON"$'\n'"$launch"
+    state_real=$(cd "$HOME_DIR/state" && pwd -P)
+    data_real=$(cd "$HOME_DIR/data" && pwd -P)
+    tmp_real=$(cd "/tmp/fm-$id" && pwd -P)
+    root_real=$(cd "$ROOT" && pwd -P)
+    want=$(jq -cn --arg status "$state_real/$id.status" --arg inbox "$state_real/$id.inbox" \
+      --arg data "$data_real/$id" --arg tmp "$tmp_real" --arg gocache "$state_real/$id.gocache" \
+      --arg opinbox "$state_real/operational-inbox" --arg skills "$root_real/.agents/skills" '{
+      feedbackDrafts: "off",
+      attribution: {commit: "", pr: "", sessionUrl: false},
+      sandbox: {
+        enabled: true,
+        failIfUnavailable: true,
+        allowUnsandboxedCommands: false,
+        excludedCommands: ["git push", "git push *", "gh", "gh *", "gh-axi", "gh-axi *", "no-mistakes", "no-mistakes *"],
+        filesystem: {allowWrite: [$status, $inbox, $data, $tmp, $gocache], denyWrite: [$opinbox, $skills]},
+        network: {strictAllowlist: true, allowedDomains: ["proxy.golang.org", "sum.golang.org"]}
+      }}')
+    [ "$(printf '%s' "$settings" | jq -cS .)" = "$(printf '%s' "$want" | jq -cS .)" ] \
+      || fail "claude $kind sandbox settings differ"$'\n'"expected: $want"$'\n'"actual:   $settings"
+    # Claude Code's sandbox lets Bash write every --add-dir, so each directory the
+    # launch grants must be one of the task's own records or explicitly write-denied.
+    granted=0
+    while IFS= read -r dir; do
+      granted=$((granted + 1))
+      printf '%s' "$settings" | jq -e --arg dir "$dir" \
+        '.sandbox.filesystem | any((.allowWrite + .denyWrite)[]; . == $dir)' >/dev/null \
+        || fail "claude $kind launch grants --add-dir $dir, which the sandbox neither scopes to the task nor denies"
+    done < <(printf '%s' "$launch" | grep -o -- "--add-dir '[^']*'" | sed "s/^--add-dir '//; s/'\$//")
+    [ "$granted" -eq 4 ] || fail "claude $kind launch carried $granted --add-dir grants, expected 4"
+    assert_contains "$launch" "export GOCACHE='$state_real/$id.gocache/build' GOMODCACHE='$state_real/$id.gocache/mod'; " \
+      "claude $kind launch did not move the Go caches into the task's own disk-backed cache directory"
+    assert_contains "$launch" "claude --permission-mode auto " "the sandboxed launch must run under auto mode"
+    assert_not_contains "$launch" "--setting-sources" \
+      "claude $kind launch dropped a setting source for a worktree without project settings"
+    assert_not_contains "$launch" "Claude Code has not loaded the instructions of this project" \
+      "claude $kind launch told the worker to read project instructions Claude Code loads itself"
+    [ -f "$HOME_DIR/state/$id.status" ] || fail "claude $kind spawn did not create the status log its sandbox grant covers"
+    [ ! -s "$HOME_DIR/state/$id.status" ] || fail "claude $kind spawn wrote into the status log"
+    [ -d "$HOME_DIR/state/$id.inbox/handled" ] || fail "claude $kind spawn did not create the granted inbox"
+    [ -d "$HOME_DIR/state/$id.gocache/build" ] && [ -d "$HOME_DIR/state/$id.gocache/mod" ] || fail "claude $kind spawn did not create the Go cache directories"
+    [ ! -e "/tmp/fm-$id/gocache" ] && [ ! -e "/tmp/fm-$id/gomodcache" ] || fail "claude $kind spawn still put Go caches in the memory-backed task temp root"
+    # The launch brief is the worker's delivered instruction record: a sandboxed
+    # scout hands its captain-hold completion gate to firstmate.
+    if [ "$kind" = scout ]; then
+      assert_grep "# Captain questions under the Claude sandbox" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed scout's launch brief did not replace its captain-hold completion gate"
+      assert_grep "never run \`fm-captain-hold.sh\`" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed scout's launch brief did not keep it from running fm-captain-hold.sh"
+      assert_grep "end \`$HOME_DIR/data/$id/report.md\` with a \`## Captain questions\` section" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed scout's launch brief did not name its report's captain-question inventory"
+      assert_no_grep "captain questions:" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed scout's launch brief still routed captain questions through a status line its done line would clear"
+    else
+      assert_no_grep "# Captain questions under the Claude sandbox" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed ship's launch brief carried the scout completion overlay"
+    fi
+    rm -rf -- "/tmp/fm-$id"
+  done
+  pass "config/claude-sandbox=on fences claude ship and scout launches with exactly the task grant"
+}
+
+# A loaded project .claude/settings.json would run its hooks outside the fence
+# and merge its keys into it, so a sandboxed launch drops the project setting
+# source whenever the worktree carries that file, whatever it holds, and then
+# tells the worker to read the project instructions Claude Code skips with that
+# source; a worktree without the file keeps every source.
+test_claude_sandbox_drops_committed_project_settings() {
+  local project rec id out status launch settings
+  for project in hooked widening absent; do
+    id="sandbox-project-$project-z31"
+    rec=$(make_spawn_case "sandbox-project-$project" claude "$id")
+    read_case_record "$rec"
+    printf 'on\n' > "$HOME_DIR/config/claude-sandbox"
+    printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
+    # A ship launches from the project's default branch, so the settings are
+    # committed there and published to its origin.
+    if [ "$project" != absent ]; then
+      mkdir -p "$PROJ_DIR/.claude"
+      if [ "$project" = hooked ]; then
+        printf '%s\n' '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"bin/project-stop.sh"}]}]}}' \
+          > "$PROJ_DIR/.claude/settings.json"
+      else
+        printf '%s\n' '{"sandbox":{"filesystem":{"allowWrite":["~"]}}}' > "$PROJ_DIR/.claude/settings.json"
+      fi
+      git -C "$PROJ_DIR" add .claude/settings.json
+      git -C "$PROJ_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+        commit -qm "project settings ($project)" || fail "could not commit the $project project settings"
+      git -C "$PROJ_DIR" push --quiet origin HEAD || fail "could not publish the $project project settings"
+    fi
+
+    out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+    status=$?
+    expect_code 0 "$status" "claude spawn with $project project settings should succeed"$'\n'"$out"
+    launch=$(cat "$LAUNCH_LOG")
+    settings=$(claude_settings_json_arg "$launch") || fail "the $project launch carried no --settings JSON"$'\n'"$launch"
+    printf '%s' "$settings" | jq -e '.sandbox.enabled == true' >/dev/null \
+      || fail "the $project launch lost the sandbox"$'\n'"$settings"
+    if [ "$project" = absent ]; then
+      assert_absent "$WT_DIR/.claude/settings.json" "the absent-settings worktree carried project settings"
+      assert_not_contains "$launch" "--setting-sources" \
+        "a sandboxed launch in a worktree without project settings dropped a setting source"
+      assert_not_contains "$launch" "Claude Code has not loaded the instructions of this project" \
+        "a worker whose project instructions load was told to read them itself"
+    else
+      [ -f "$WT_DIR/.claude/settings.json" ] || fail "the $project ship worktree did not carry the committed project settings"
+      assert_contains "$launch" "' --setting-sources user,local --settings '" \
+        "a sandboxed launch over $project project settings did not drop the project setting source"
+      assert_contains "$launch" "authority absent from the brief. Claude Code has not loaded the instructions of this project for this session, so before starting the task read its CLAUDE.md, every file that CLAUDE.md imports (such as AGENTS.md), and the files under .claude/rules" \
+        "a worker launched without its $project project settings was not told to read the project instructions"
+    fi
+    rm -rf -- "/tmp/fm-$id"
+  done
+  pass "config/claude-sandbox=on drops the project setting source whenever the worktree carries project settings"
+}
+
+test_claude_sandbox_invalid_refuses_before_endpoint_or_metadata() {
+  local rec id out status
+  id=sandbox-invalid-z26
+  rec=$(make_spawn_case sandbox-invalid claude "$id")
+  read_case_record "$rec"
+  printf 'yes\n' > "$HOME_DIR/config/claude-sandbox"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 1 "$status" "an unrecognized claude-sandbox token must refuse the spawn"
+  assert_contains "$out" "config/claude-sandbox holds 'yes'" "refusal must name the file and the offending token"
+  assert_contains "$out" "on (" "refusal must list on as an accepted value"
+  assert_contains "$out" "off (" "refusal must list off as an accepted value"
+  [ ! -s "$LAUNCH_LOG" ] || fail "an invalid sandbox setting must launch nothing (got: $(cat "$LAUNCH_LOG"))"
+  assert_absent "$HOME_DIR/state/$id.meta" "refusal must happen before meta is written"
+  pass "an unrecognized config/claude-sandbox token refuses before any endpoint or metadata"
+}
+
+# The commands the fence exempts and Claude's file tools are reviewed only by
+# auto mode, so `on` under the default bypass posture refuses rather than
+# launching them unreviewed.
+test_claude_sandbox_refuses_without_auto_permission_mode() {
+  local posture rec id out status
+  for posture in absent bypass; do
+    id="sandbox-noauto-$posture-z30"
+    rec=$(make_spawn_case "sandbox-noauto-$posture" claude "$id")
+    read_case_record "$rec"
+    printf 'on\n' > "$HOME_DIR/config/claude-sandbox"
+    [ "$posture" = absent ] || printf '%s\n' "$posture" > "$HOME_DIR/config/claude-permission-mode"
+
+    out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+    status=$?
+    expect_code 1 "$status" "claude-sandbox=on with a $posture permission mode must refuse the spawn"
+    assert_contains "$out" "config/claude-sandbox is on but config/claude-permission-mode resolves to 'bypass'" \
+      "refusal must name both files and the resolved permission mode ($posture)"
+    assert_contains "$out" "write auto to config/claude-permission-mode" "refusal must name the fix ($posture)"
+    [ ! -s "$LAUNCH_LOG" ] || fail "a sandbox without auto mode must launch nothing (got: $(cat "$LAUNCH_LOG"))"
+    assert_absent "$HOME_DIR/state/$id.meta" "refusal must happen before meta is written ($posture)"
+    assert_absent "/tmp/fm-$id" "refusal must happen before the task temp root exists ($posture)"
+  done
+  pass "config/claude-sandbox=on refuses before any endpoint unless config/claude-permission-mode is auto"
+}
+
+test_claude_sandbox_refuses_raw_claude_command() {
+  local rec id out status
+  id=sandbox-raw-z27
+  rec=$(make_spawn_case sandbox-raw claude "$id")
+  read_case_record "$rec"
+  printf 'on\n' > "$HOME_DIR/config/claude-sandbox"
+  printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" "claude --model opus")
+  status=$?
+  expect_code 1 "$status" "a raw claude command must refuse while the sandbox is on"
+  assert_contains "$out" "config/claude-sandbox is on, and a raw claude launch command cannot carry the sandbox settings" "refusal must name the sandbox setting"
+  [ ! -s "$LAUNCH_LOG" ] || fail "a refused raw claude command must launch nothing (got: $(cat "$LAUNCH_LOG"))"
+  assert_absent "$HOME_DIR/state/$id.meta" "refusal must happen before meta is written"
+  pass "config/claude-sandbox=on refuses a raw claude launch command it cannot fence"
+}
+
+test_claude_sandbox_leaves_other_launches_unfenced() {
+  local rec id sm out status launch
+  id=sandbox-codex-z28
+  rec=$(make_spawn_case sandbox-codex codex "$id")
+  read_case_record "$rec"
+  printf 'on\n' > "$HOME_DIR/config/claude-sandbox"
+  printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --harness codex)
+  status=$?
+  expect_code 0 "$status" "codex spawn under claude-sandbox=on should succeed"$'\n'"$out"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "codex " "codex launch did not run codex"
+  assert_not_contains "$launch" '"sandbox"' "the claude sandbox must not leak into a codex launch"
+  assert_not_contains "$launch" "GOMODCACHE" "a codex launch must keep the shared Go caches"
+  assert_not_contains "$launch" "--setting-sources" "a codex launch must not carry claude's setting sources"
+
+  id=sandbox-secondmate-z29
+  rec=$(make_spawn_case sandbox-secondmate claude "$id")
+  read_case_record "$rec"
+  printf 'on\n' > "$HOME_DIR/config/claude-sandbox"
+  printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
+  sm="$CASE_DIR/secondmate-home"
+  make_seeded_secondmate_home "$sm" "$id"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
+  status=$?
+  expect_code 0 "$status" "claude secondmate spawn under claude-sandbox=on should succeed"$'\n'"$out"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "claude --permission-mode auto " "secondmate launch did not run claude"
+  assert_not_contains "$launch" '"sandbox"' "a claude secondmate must launch unfenced"
+  assert_not_contains "$launch" "GOMODCACHE" "a claude secondmate must keep the shared Go caches"
+  assert_not_contains "$launch" "--setting-sources" "a claude secondmate must keep every setting source"
+  pass "config/claude-sandbox fences claude crewmates and scouts only"
+}
+
 test_worker_launch_delivers_role_scope
 test_no_profile_keeps_claude_profile_defaults
 test_claude_launch_brief_publishes_record_doorbell
@@ -1861,6 +2126,14 @@ test_claude_permission_mode_auto_reaches_scout_launch
 test_claude_worker_launch_covers_task_channel_dirs
 test_claude_permission_mode_invalid_refuses_before_endpoint_or_metadata
 test_non_claude_harness_ignores_claude_permission_mode
+test_claude_sandbox_off_matches_absent_launch
+test_claude_sandbox_off_keeps_the_scout_completion_gate
+test_claude_sandbox_on_fences_ship_and_scout_launches
+test_claude_sandbox_drops_committed_project_settings
+test_claude_sandbox_invalid_refuses_before_endpoint_or_metadata
+test_claude_sandbox_refuses_without_auto_permission_mode
+test_claude_sandbox_refuses_raw_claude_command
+test_claude_sandbox_leaves_other_launches_unfenced
 test_non_claude_harness_ignores_config_dir
 test_claude_task_launch_carries_control_channel_authority
 test_claude_secondmate_launch_omits_task_control_channel_authority

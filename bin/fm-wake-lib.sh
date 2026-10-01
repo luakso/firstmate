@@ -1192,7 +1192,12 @@ fm_lock_try_acquire() {
 }
 
 fm_lock_acquire_wait() {
-  local lockdir=$1
+  local lockdir=$1 parent
+  fm_dirname_to parent "$lockdir"
+  if [ ! -w "$parent" ]; then
+    echo "error: cannot take lock $lockdir: its directory $parent is not writable by this process" >&2
+    return 1
+  fi
   while ! fm_lock_try_acquire "$lockdir"; do
     sleep 0.1
   done

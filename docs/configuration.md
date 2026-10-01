@@ -9,7 +9,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | --- | --- |
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
-| Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), and [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist) |
+| Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Claude sandbox](#claude-sandbox-configclaude-sandbox), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), and [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
@@ -825,6 +825,68 @@ The diagnostic names the accepted values; Firstmate never falls back to a permis
 The file is a captain-wide safety preference, so it is inherited into secondmate homes under the [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md) inherited-local-material contract; a secondmate's own Claude crewmates then launch on the same posture.
 
 The [Claude adapter reference](../.agents/skills/harness-adapters/references/harness/claude.md) records the permission-mode observations and the distinct startup dialogs.
+
+## Claude sandbox (config/claude-sandbox)
+
+The optional local, gitignored `config/claude-sandbox` fences the Bash commands of every Claude crewmate and scout inside Claude Code's built-in sandbox, on fresh spawns and control-plane relaunches alike.
+The captain's own sessions, Firstmate's primary session, Claude secondmates, and every other harness are unchanged.
+
+### Accepted values and refusals
+
+The token is the file's whitespace-trimmed content.
+
+| Token | Claude crewmate and scout launches |
+| --- | --- |
+| `off` | Unchanged; an absent file means `off`. |
+| `on` | The per-launch `--settings` JSON gains a `sandbox` object; requires `config/claude-permission-mode` to be `auto`. |
+
+Any other value or an unreadable file refuses every spawn from that home before any endpoint, worktree, or task record exists, exactly like `config/claude-permission-mode`.
+So does `on` while [`config/claude-permission-mode`](#claude-permission-mode-configclaude-permission-mode) is absent or `bypass`: the commands the fence exempts and Claude's file tools are reviewed only by auto mode's classifier, so the sandbox never runs without it.
+With `on`, a raw `claude ...` launch command refuses too, because it cannot carry the sandbox settings.
+With `on`, a Claude ship on a `forge=gerrit` project refuses at spawn and relaunch, because a Gerrit worker must itself run `git fetch` and `gerrit-axi publish`, and the fence keeps both from the Gerrit host and the git credentials.
+So does a Claude ship or scout whose brief was scaffolded with `--herdr-lab`, because its worker must itself drive Herdr and tmux lab sessions through their Unix sockets, which the fence refuses.
+Run a Gerrit or Herdr-lab task with a non-Claude harness, or turn the sandbox off for it.
+Promotion keeps the scout's running process and is not refused, so a Claude scout launched inside the sandbox on a `forge=gerrit` project cannot publish after promotion: write `off` to `config/claude-sandbox` and relaunch the scout before promoting it.
+
+### What a sandboxed worker can and cannot do
+
+`bin/fm-spawn.sh`'s `claude_sandbox_settings` owns the exact settings; this is their effect on Linux (bubblewrap), where it was verified with Claude Code 2.1.283.
+
+- Writes succeed only in the worker's own worktree, the project clone's shared git data, Claude's private temp directory, and the task records the brief tells it to write: `state/<id>.status` (append), `state/<id>.inbox` with its `handled/` moves, `data/<id>`, the per-task temp root `/tmp/fm-<id>`, and the worker's own Go caches in `state/<id>.gocache`.
+  Because every worker runs in a linked worktree, Claude's sandbox also leaves the project clone's shared `.git` writable: every branch ref, the object store, and other tasks' `worktrees/` entries, with only its `hooks/` and `config` denied.
+  The fence therefore protects everything outside the project clone, but not the clone's shared git data, and not the repository git hooks an excluded `git push` fires (supported limits below).
+  Every other write fails with `Read-only file system`, including in the shared directories the launch grants for reading, `state/operational-inbox` and the code root's `.agents/skills`, which the sandbox's `denyWrite` keeps read-only because other tasks and unfenced sessions load them.
+- Unix-socket connections fail with `Operation not permitted`, so the worker cannot reach Herdr, tmux, Docker, or desktop services behind D-Bus.
+- Network egress is limited to the Go module proxy and checksum database, and any other host is refused rather than prompted, so an unattended pane never parks on a network question.
+- `GOTMPDIR` lives in the per-task temp root, and `GOCACHE` and `GOMODCACHE` in the task's own disk-backed `state/<id>.gocache` (`build/` and `mod/`), so Go builds work inside the fence without filling a memory-backed `/tmp`; each sandboxed task starts with cold caches, and cleanup removes both, read-only module trees included.
+- `git push`, `gh`, `gh-axi`, and `no-mistakes` run outside the fence, reviewed by auto mode's classifier, because they need the captain's GitHub login in the desktop keyring and the no-mistakes daemon socket.
+- When the worktree carries a `.claude/settings.json`, as a project that commits one does, the launch also passes `--setting-sources user,local`, whatever the file holds, so it never loads.
+  The launch's `--settings` JSON overrides only the keys it sets: a loaded project file would merge its array keys, such as sandbox paths and permission rules, into the fence, apply keys the launch never sets, and have Claude Code run its hooks and helper commands outside the sandbox on scripts the worker can edit inside it.
+  Claude Code ties the project's `CLAUDE.md`, `.claude/rules`, skills, and agents to the same source, so the worker's system prompt then tells it to read `CLAUDE.md`, every file it imports (such as `AGENTS.md`), and `.claude/rules` itself.
+  Firstmate's own worker hooks live in the untracked `.claude/settings.local.json` and still load, and the launch's `--settings` JSON always applies.
+  A worktree without a `.claude/settings.json` has no project settings to load, so its launch keeps every source and needs no such instruction.
+- If the sandbox cannot start, the worker exits at startup instead of running unfenced.
+
+Supported limits:
+
+- The fence covers Bash commands only; auto mode's classifier reviews Claude's built-in file tools instead.
+- Repository git hooks still run outside the fence when an excluded `git push` fires them: a `pre-push` hook, such as `.husky/pre-push` under a project's `core.hooksPath`, is worktree code the worker can edit inside the fence, and auto mode's classifier sees only the push command.
+- For a project that commits a `.claude/settings.json`, a sandboxed worker loads neither the project's `.claude/skills` nor its `.claude/agents`, and gets its `CLAUDE.md` and rules only by reading them as its system prompt instructs.
+- Skipping that file also drops the rules in it that narrow access: `permissions.deny` (so its `Read` and `Edit` denies no longer bind Claude's file tools or become sandbox read and write denies), `sandbox.filesystem` `denyRead` and `denyWrite`, `sandbox.credentials` deny entries, and `sandbox.network.deniedDomains`.
+  A sandboxed worker on such a project can therefore read or use what the same worker unsandboxed could not.
+  Restate any such rule the captain relies on in user settings (`~/.claude/settings.json`, or `settings.json` under the worker's `CLAUDE_CONFIG_DIR` when one is set); the worktree's `.claude/settings.local.json` is Firstmate's and is rewritten at every launch.
+- A sandboxed Claude scout cannot run `bin/fm-captain-hold.sh`, whose backlog and task-record writes fall outside the fence, so its launch brief replaces the captain-hold completion gate: the scout lists every captain question in a `## Captain questions` section of its report, or states there that there are none, and Firstmate reads that section and runs `hold` and `complete` for it outside the fence before the scout can be torn down.
+- The status command's optional fleet-ledger append cannot write inside the fence and is skipped; the watcher's per-poll capture records the same status line.
+  Any Firstmate lock a sandboxed command tries to take in a directory it cannot write fails at once with an error instead of waiting forever.
+- Anything else that needs a socket, the keyring, or another host, such as `git fetch`, browser automation, Lavish, or a tmux-driven test suite, fails inside the fence and is left to the no-mistakes pipeline or to Firstmate; a Gerrit ship and a `--herdr-lab` ship or scout are refused at spawn instead (above).
+- Claude's protected paths (`.claude/skills` and the other `.claude/*` entries, `.mcp.json`, `.vscode`, and `.idea`) are read-only to sandboxed Bash even inside the worktree; in a firstmate worktree that covers `.agents/skills` through the tracked `.claude/skills` symlink.
+  Edits there go through Claude's Edit tool, and git operations that rewrite those files, such as a rebase, checkout, or reset across a changed skill, are left to the no-mistakes pipeline or to Firstmate.
+- Inside the fence, the sandbox's protective placeholders for absent dotfiles (such as `.bashrc` or `.gitconfig`) appear in the worktree, so `git add -A` refuses them; a sandboxed worker stages explicit paths instead.
+
+### When changes apply and inheritance
+
+`bin/fm-spawn.sh` reads the file on every spawn and relaunch, so a change reaches the next launch without a restart.
+Like `config/claude-permission-mode`, it is a captain-wide safety preference inherited into secondmate homes, so a secondmate's own Claude crewmates and scouts are fenced too while the secondmate itself is not: it must still reach its runtime backend and write its own home's state.
 
 ## Worker account pin (config/claude-account, config/pi-account)
 
