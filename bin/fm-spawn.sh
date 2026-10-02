@@ -345,8 +345,10 @@
 #   With the sandbox on, the launch also gives the worker its own disk-backed
 #   GOCACHE and GOMODCACHE under state/<id>.gocache, downloads the modules of a
 #   worktree with a root go.mod or go.work into that cache outside the fence
-#   before the task record is published (a failure only warns), and
-#   pre-creates the task's status log so its append grant has a file to cover.
+#   after the task record is published and the task-set and Treehouse project
+#   locks are released, just before the worker launches (a failure only warns),
+#   and pre-creates the task's status log so its append grant has a file to
+#   cover.
 #   When the worktree
 #   carries a .claude/settings.json, whatever it holds, the launch passes
 #   --setting-sources user,local so its hooks and helper commands never run
@@ -1465,13 +1467,19 @@ spawn_abort_cleanup() {
   fi
   # The per-id spawn lock is retaken so a concurrent spawn of the same id, which
   # reinstalls this strip dir, is never undone. A launched agent whose endpoint
-  # was not closed may still be committing, so it keeps its strip.
-  if [ "$status" -ne 0 ] && [ -n "$GIT_HOOKS_DIR" ] &&
+  # was not closed may still be committing, so it keeps its strip. The sandboxed
+  # worker's Go caches go with the strip: without a surviving record no teardown
+  # reaches them, and Go leaves module trees read-only.
+  if [ "$status" -ne 0 ] && [ -n "$SPAWN_TASK_LOCK" ] &&
     { [ "$SPAWN_LAUNCH_SENT" = 0 ] || [ "$SPAWN_ENDPOINT_CLOSED" = 1 ]; } &&
     fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then
     if [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
-      chmod u+w "$GIT_HOOKS_DIR" 2>/dev/null || true
-      rm -rf "$GIT_HOOKS_DIR" 2>/dev/null || true
+      if [ -n "$GIT_HOOKS_DIR" ]; then
+        chmod u+w "$GIT_HOOKS_DIR" 2>/dev/null || true
+        rm -rf "$GIT_HOOKS_DIR" 2>/dev/null || true
+      fi
+      chmod -R u+w "$STATE/$ID.gocache" 2>/dev/null || true
+      rm -rf "$STATE/$ID.gocache" 2>/dev/null || true
     fi
     fm_lock_release "$SPAWN_TASK_LOCK" || true
   fi
@@ -3008,10 +3016,12 @@ claude_sandbox_settings() {  # <state-dir> <data-dir> <task-tmp> <code-root> <ta
 # every module zip download, so a sandboxed worker cannot fill its cold module
 # cache itself. When the worktree root holds a go.mod or a go.work (workspace
 # mode covers every module it uses), download the dependencies here, outside
-# the fence, into the task's own GOMODCACHE. The spawn runs it once the
-# worktree exists and before the task record is published; the bound keeps a
-# stalled proxy from holding the spawn, and any failure only warns: the worker
-# still launches and a missing module fails inside the fence as before.
+# the fence, into the task's own GOMODCACHE. The spawn runs it after the task
+# record is published and its task-set and Treehouse project locks are
+# released, just before the worker launches; the 90-second bound keeps a
+# stalled proxy from holding the spawn, and any failure or timeout only warns:
+# the worker still launches and a missing module fails inside the fence as
+# before.
 claude_sandbox_go_mod_download() {  # <worktree> <gocache-dir>
   local wt=$1 gocache=$2 out rc
   [ -f "$wt/go.mod" ] || [ -f "$wt/go.work" ] || return 0
@@ -4684,9 +4694,6 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_REPLACEMENT_STATE=$STATE_REAL
   RELAUNCH_REPLACEMENT_WT=$WT
 fi
-if [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
-  claude_sandbox_go_mod_download "$WT" "$STATE_REAL/$ID.gocache"
-fi
 if [ "$KIND" != secondmate ]; then
   # Arm the semantic busy-state contract (bin/fm-busy-lib.sh) for every
   # adapter with a verified semantic source. The launch brief sent below IS a
@@ -5382,6 +5389,7 @@ case "$LAUNCH" in
       echo "error: could not resolve the write grant for $ID's claude sandbox" >&2
       exit 1
     }
+    claude_sandbox_go_mod_download "$WT" "$STATE_REAL/$ID.gocache"
     if [ -e "$WT/.claude/settings.json" ] || [ -L "$WT/.claude/settings.json" ]; then
       CLAUDE_SETTING_SOURCES='--setting-sources user,local '
       CLAUDE_PROJECT_MEMORY=' Claude Code has not loaded the instructions of this project for this session, so before starting the task read its CLAUDE.md, every file that CLAUDE.md imports (such as AGENTS.md), and the files under .claude/rules, and treat them as the project instructions Claude Code would otherwise have loaded.'
