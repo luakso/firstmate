@@ -20,6 +20,11 @@
 # brief contributes only Task lines explicitly marked as captain words to intent,
 # read outside fenced blocks and indented examples so a quoted `Captain:` sample
 # never passes the provenance gate as the ask (bin/fm-dod-lib.sh).
+# A Claude scout keeps running inside the sandbox (config/claude-sandbox=on)
+# after promotion, so a no-mistakes promotion of one also ends the ship
+# instructions with the fence's no-mistakes command spelling
+# (fm_brief_sandbox_no_mistakes_overlay); brief.md does not carry it, because a
+# relaunch through bin/fm-spawn.sh adds it whenever that launch is sandboxed.
 # A scout records no delivery posture, so promotion is where this task's delivery
 # contract is decided: --mode, --yolo, and the ship branch resolved from
 # --branch-prefix are written into the meta alongside the kind= flip. Firstmate resolves all three at promotion time, having just
@@ -230,8 +235,13 @@ fi
 # the --yes ban is the delivery hole this file used to leave open.
 INSTRUCTIONS="$DATA/$ID/ship-instructions.md"
 PROMOTION_ASK_USER_BLOCK=
+PROMOTE_SANDBOXED=0
 if [ "$MODE" = no-mistakes ]; then
   PROMOTION_ASK_USER_BLOCK=$(fm_ask_user_escalation_block "$DATA" "$ID")
+  if [ "$(sed -n 's/^harness=//p' "$META" | head -n 1)" = claude ] &&
+    [ "$(tr -d '[:space:]' 2>/dev/null <"${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/claude-sandbox")" = on ]; then
+    PROMOTE_SANDBOXED=1
+  fi
 fi
 IFS= read -r -d '' PROMOTION_SHIP_SPEC <<EOF || true
 If these promotion steps were already completed before a relaunch, preserve the existing \`$BRANCH_Q\` branch and continue from its current state; do not repeat them destructively.
@@ -279,7 +289,8 @@ EOF
 $PROMOTION_SHIP_SPEC
 
 EOF
-  promote_delivery_contract
+  promote_delivery_contract &&
+    { [ "$PROMOTE_SANDBOXED" != 1 ] || fm_brief_sandbox_no_mistakes_overlay; }
 } > "$TMP" || { echo "error: could not render ship instructions for mode=$MODE" >&2; exit 1; }
 mv "$TMP" "$INSTRUCTIONS"
 TMP=

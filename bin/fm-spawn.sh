@@ -343,10 +343,11 @@
 #   sandboxed relaunch of a task recorded in a linked worktree. A clone task
 #   relaunched unsandboxed keeps working in its clone.
 #   With the sandbox on, the launch also gives the worker its own disk-backed
-#   GOCACHE and GOMODCACHE under state/<id>.gocache, downloads a Go module
-#   worktree's dependencies into that cache outside the fence (a failure only
-#   warns), and pre-creates the task's status log so its append grant has a
-#   file to cover. When the worktree
+#   GOCACHE and GOMODCACHE under state/<id>.gocache, downloads the modules of a
+#   worktree with a root go.mod or go.work into that cache outside the fence
+#   before the task record is published (a failure only warns), and
+#   pre-creates the task's status log so its append grant has a file to cover.
+#   When the worktree
 #   carries a .claude/settings.json, whatever it holds, the launch passes
 #   --setting-sources user,local so its hooks and helper commands never run
 #   outside the fence and its keys never merge into it, and tells the worker to
@@ -357,9 +358,9 @@
 #   scout's launch brief replaces its captain-hold completion gate, whose
 #   backlog and task-record writes fall outside the fence, with an inventory
 #   firstmate turns into hold and complete (fm_brief_sandbox_scout_overlay).
-#   A sandboxed no-mistakes ship's launch brief tells it how to spell --intent
-#   so its run still matches the no-mistakes exclusion
-#   (fm_brief_sandbox_intent_overlay).
+#   A sandboxed no-mistakes ship's launch brief tells it how to spell every
+#   no-mistakes command so it still matches the no-mistakes exclusion
+#   (fm_brief_sandbox_no_mistakes_overlay).
 # Worker account pin (config/claude-account, config/pi-account):
 #   Opt-in. With no file, a Claude or Pi launch is unchanged: Claude still
 #   receives this process's own CLAUDE_CONFIG_DIR when it is set, and Pi the
@@ -3005,32 +3006,24 @@ claude_sandbox_settings() {  # <state-dir> <data-dir> <task-tmp> <code-root> <ta
 # config/claude-sandbox=on (header above): the fence's network allowlist reaches
 # proxy.golang.org but not storage.googleapis.com, where the proxy redirects
 # every module zip download, so a sandboxed worker cannot fill its cold module
-# cache itself. When the worktree is a Go module (go.mod at its root), download
-# the module's dependencies here, outside the fence, into the task's own
-# GOMODCACHE, under the GOFLAGS the worker gets: this process's own, dropped
-# when config/launch-env-allowlist is on and does not name GOFLAGS. The bound
-# keeps a stalled proxy from holding the spawn, and any failure only warns: the
-# worker still launches and a missing module fails inside the fence as before.
+# cache itself. When the worktree root holds a go.mod or a go.work (workspace
+# mode covers every module it uses), download the dependencies here, outside
+# the fence, into the task's own GOMODCACHE. The spawn runs it once the
+# worktree exists and before the task record is published; the bound keeps a
+# stalled proxy from holding the spawn, and any failure only warns: the worker
+# still launches and a missing module fails inside the fence as before.
 claude_sandbox_go_mod_download() {  # <worktree> <gocache-dir>
   local wt=$1 gocache=$2 out rc
-  local goflags_set=${GOFLAGS+1} goflags=${GOFLAGS-}
-  [ -f "$wt/go.mod" ] || return 0
+  [ -f "$wt/go.mod" ] || [ -f "$wt/go.work" ] || return 0
   if ! command -v go >/dev/null 2>&1; then
-    echo "warning: $wt is a Go module but go is not on PATH; the sandboxed worker starts with an empty module cache and cannot download modules inside the fence" >&2
+    echo "warning: $wt holds a root go.mod or go.work but go is not on PATH; the sandboxed worker starts with an empty module cache and cannot download modules inside the fence" >&2
     return 0
-  fi
-  if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
-    case $'\n'"$LAUNCH_ENV_NAMES"$'\n' in
-    *$'\n'GOFLAGS$'\n'*) ;;
-    *) goflags_set= ;;
-    esac
   fi
   rc=0
   out=$(
     cd "$wt" || exit 1
     export GOMODCACHE="$gocache/mod" GOCACHE="$gocache/build"
-    if [ -n "$goflags_set" ]; then export GOFLAGS="$goflags"; else unset GOFLAGS; fi
-    fm_run_timed 300 go mod download </dev/null 2>&1
+    fm_run_timed 90 go mod download </dev/null 2>&1
   ) || rc=$?
   [ "$rc" -eq 0 ] && return 0
   if fm_timed_out "$rc"; then
@@ -3289,8 +3282,7 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
       printf '\n' &&
       cat "$SOURCE_BRIEF" &&
       if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
-        { [ "$CLAUDE_SANDBOX_ACTIVE" != 1 ] || fm_brief_sandbox_intent_overlay; } &&
-          fm_brief_intent_overlay "$CAPTAIN_INTENT"
+        fm_brief_intent_overlay "$CAPTAIN_INTENT" "$CLAUDE_SANDBOX_ACTIVE"
       fi &&
       if [ "$KIND" = scout ] && [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
         fm_brief_sandbox_scout_overlay "$DATA" "$ID"
@@ -4692,6 +4684,9 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_REPLACEMENT_STATE=$STATE_REAL
   RELAUNCH_REPLACEMENT_WT=$WT
 fi
+if [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
+  claude_sandbox_go_mod_download "$WT" "$STATE_REAL/$ID.gocache"
+fi
 if [ "$KIND" != secondmate ]; then
   # Arm the semantic busy-state contract (bin/fm-busy-lib.sh) for every
   # adapter with a verified semantic source. The launch brief sent below IS a
@@ -5387,7 +5382,6 @@ case "$LAUNCH" in
       echo "error: could not resolve the write grant for $ID's claude sandbox" >&2
       exit 1
     }
-    claude_sandbox_go_mod_download "$WT" "$STATE_REAL/$ID.gocache"
     if [ -e "$WT/.claude/settings.json" ] || [ -L "$WT/.claude/settings.json" ]; then
       CLAUDE_SETTING_SOURCES='--setting-sources user,local '
       CLAUDE_PROJECT_MEMORY=' Claude Code has not loaded the instructions of this project for this session, so before starting the task read its CLAUDE.md, every file that CLAUDE.md imports (such as AGENTS.md), and the files under .claude/rules, and treat them as the project instructions Claude Code would otherwise have loaded.'
