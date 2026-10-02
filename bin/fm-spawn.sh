@@ -355,6 +355,9 @@
 #   scout's launch brief replaces its captain-hold completion gate, whose
 #   backlog and task-record writes fall outside the fence, with an inventory
 #   firstmate turns into hold and complete (fm_brief_sandbox_scout_overlay).
+#   A sandboxed no-mistakes ship's launch brief tells it how to spell --intent
+#   so its run still matches the no-mistakes exclusion
+#   (fm_brief_sandbox_intent_overlay).
 # Worker account pin (config/claude-account, config/pi-account):
 #   Opt-in. With no file, a Claude or Pi launch is unchanged: Claude still
 #   receives this process's own CLAUDE_CONFIG_DIR when it is set, and Pi the
@@ -3242,7 +3245,8 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
       printf '\n' &&
       cat "$SOURCE_BRIEF" &&
       if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
-        fm_brief_intent_overlay "$CAPTAIN_INTENT"
+        { [ "$CLAUDE_SANDBOX_ACTIVE" != 1 ] || fm_brief_sandbox_intent_overlay; } &&
+          fm_brief_intent_overlay "$CAPTAIN_INTENT"
       fi &&
       if [ "$KIND" = scout ] && [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
         fm_brief_sandbox_scout_overlay "$DATA" "$ID"

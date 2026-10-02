@@ -1907,11 +1907,13 @@ test_claude_sandbox_off_matches_absent_launch() {
   launch=$(cat "$LAUNCH_LOG")
   expected=$(claude_expected_launch "$launch" "$HOME_DIR" "$id" --dangerously-skip-permissions)
   [ "$launch" = "$expected" ] || fail "claude-sandbox=off changed the launch"$'\n'"expected: $expected"$'\n'"actual:   $launch"
+  assert_no_grep "# No-mistakes intent under the Claude sandbox" "$HOME_DIR/data/$id/launch-brief.md" \
+    "an unsandboxed ship's launch brief carried the sandbox --intent spelling section"
   pass "config/claude-sandbox=off launches exactly as an absent file does"
 }
 
 test_claude_sandbox_on_fences_ship_and_scout_launches() {
-  local kind rec id out status launch settings state_real data_real tmp_real root_real want dir granted clone pane_log
+  local kind rec id out status launch settings state_real data_real tmp_real root_real want dir granted clone pane_log sandbox_line intent_line
   for kind in ship scout; do
     id="sandbox-on-$kind-z25"
     rec=$(make_spawn_case "sandbox-on-$kind" claude "$id")
@@ -1992,6 +1994,23 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
     else
       assert_no_grep "# Captain questions under the Claude sandbox" "$HOME_DIR/data/$id/launch-brief.md" \
         "a sandboxed ship's launch brief carried the scout completion overlay"
+      # Claude Code's no-mistakes exclusion stops matching on a backtick, `$(`,
+      # `<(`, or `$'` anywhere in the command, so a sandboxed no-mistakes ship
+      # learns to pass --intent as one plain single-quoted argument.
+      assert_grep "# No-mistakes intent under the Claude sandbox" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed no-mistakes ship's launch brief did not say how to spell --intent through the fence's exclusion"
+      assert_grep "one plain single-quoted argument" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed ship's launch brief did not ask for a single-quoted --intent"
+      assert_grep "write each backtick as a plain \`\"\`" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed ship's launch brief did not replace the backticks that break the exclusion"
+      assert_grep "Never pass the intent through \`\$'...'\`, \`\$(...)\`, \`<(...)\`, or a heredoc substitution." "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed ship's launch brief did not rule out the spellings the exclusion refuses"
+      # The intent overlay authorizes everything to the end of the brief, so the
+      # sandbox section must precede it rather than become part of the intent.
+      sandbox_line=$(grep -n -x "# No-mistakes intent under the Claude sandbox" "$HOME_DIR/data/$id/launch-brief.md" | cut -d: -f1)
+      intent_line=$(grep -n -x "## Captain intent authorized for --intent" "$HOME_DIR/data/$id/launch-brief.md" | cut -d: -f1)
+      [ -n "$intent_line" ] && [ "$sandbox_line" -lt "$intent_line" ] \
+        || fail "a sandboxed ship's --intent spelling section landed inside the authorized captain intent"
     fi
     rm -rf -- "/tmp/fm-$id"
   done

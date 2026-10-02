@@ -247,6 +247,26 @@ EOF
   printf "Before reporting done, end \`%s/%s/report.md\` with a \`## Captain questions\` section that lists each such question with its options, or states that there are none; firstmate reads that section to hold them for the captain.\n" "$1" "$2"
 }
 
+# A no-mistakes ship launched inside the Claude sandbox starts its run through
+# the fence's `no-mistakes *` exclusion, which Claude Code (verified 2.1.283,
+# Linux) stops matching - so the run starts fenced and the daemon socket is
+# refused - whenever the command text holds a backtick, `$(`, `<(`, or `$'`,
+# even inside single quotes, or chains the command after another; literal
+# newlines still match. no-mistakes takes the intent only as an argument, so
+# its brief spells the intent as one plain single-quoted argument with each
+# backtick written as a plain quote. bin/fm-spawn.sh emits it before
+# fm_brief_intent_overlay, whose authorized intent runs to the end of the brief.
+fm_brief_sandbox_intent_overlay() {
+  cat <<'EOF'
+
+# No-mistakes intent under the Claude sandbox
+This ship runs inside the Claude sandbox, which lets `no-mistakes` reach its daemon socket only when the whole Bash command matches its `no-mistakes *` exclusion.
+The exclusion stops matching, so the run starts inside the fence and fails on the daemon socket, when the command text contains a backtick, `$(`, `<(`, or `$'` anywhere, even inside single quotes, or when the command is chained after another command or carries an environment prefix.
+So start your run as one standalone `no-mistakes axi run` command whose `--intent` is one plain single-quoted argument: keep the intent's words and line breaks as they are (literal newlines are fine), write each backtick as a plain `"`, write each `'` as `'\''`, and put a space after the `$` or `<` of any `$(`, `<(`, or `$'` the intent itself contains.
+Never pass the intent through `$'...'`, `$(...)`, `<(...)`, or a heredoc substitution.
+EOF
+}
+
 # Accept the current two-subsection contract only when both bodies have content;
 # briefs predating that contract remain valid when their # Task body has content.
 fm_brief_task_content_valid() {  # <file>
