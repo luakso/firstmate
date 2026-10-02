@@ -343,8 +343,10 @@
 #   sandboxed relaunch of a task recorded in a linked worktree. A clone task
 #   relaunched unsandboxed keeps working in its clone.
 #   With the sandbox on, the launch also gives the worker its own disk-backed
-#   GOCACHE and GOMODCACHE under state/<id>.gocache, and pre-creates the task's
-#   status log so its append grant has a file to cover. When the worktree
+#   GOCACHE and GOMODCACHE under state/<id>.gocache, downloads a Go module
+#   worktree's dependencies into that cache outside the fence (a failure only
+#   warns), and pre-creates the task's status log so its append grant has a
+#   file to cover. When the worktree
 #   carries a .claude/settings.json, whatever it holds, the launch passes
 #   --setting-sources user,local so its hooks and helper commands never run
 #   outside the fence and its keys never merge into it, and tells the worker to
@@ -2969,7 +2971,9 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
 # helper in the status command is not granted: it needs lock and offset files
 # across state/, the command already tolerates its failure, and the watcher's
 # per-poll capture records the same line. The Go module proxy and checksum
-# database are the only allowed hosts, so a per-task module cache can fill.
+# database are the only allowed hosts; the proxy's module zip downloads redirect
+# to a host the fence refuses, so claude_sandbox_go_mod_download fills the
+# per-task module cache at spawn instead.
 # excludedCommands run git push, gh, gh-axi, and no-mistakes outside the fence
 # under auto mode, which config/claude-sandbox=on requires, because they need
 # the D-Bus keyring login and the no-mistakes daemon socket. An excluded git
@@ -2996,6 +3000,46 @@ claude_sandbox_settings() {  # <state-dir> <data-dir> <task-tmp> <code-root> <ta
   json=${json#\{}
   json=${json%\}}
   printf ',%s' "${json//\'/\'\\\'\'}"
+}
+
+# config/claude-sandbox=on (header above): the fence's network allowlist reaches
+# proxy.golang.org but not storage.googleapis.com, where the proxy redirects
+# every module zip download, so a sandboxed worker cannot fill its cold module
+# cache itself. When the worktree is a Go module (go.mod at its root), download
+# the module's dependencies here, outside the fence, into the task's own
+# GOMODCACHE, under the GOFLAGS the worker gets: this process's own, dropped
+# when config/launch-env-allowlist is on and does not name GOFLAGS. The bound
+# keeps a stalled proxy from holding the spawn, and any failure only warns: the
+# worker still launches and a missing module fails inside the fence as before.
+claude_sandbox_go_mod_download() {  # <worktree> <gocache-dir>
+  local wt=$1 gocache=$2 out rc
+  local goflags_set=${GOFLAGS+1} goflags=${GOFLAGS-}
+  [ -f "$wt/go.mod" ] || return 0
+  if ! command -v go >/dev/null 2>&1; then
+    echo "warning: $wt is a Go module but go is not on PATH; the sandboxed worker starts with an empty module cache and cannot download modules inside the fence" >&2
+    return 0
+  fi
+  if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
+    case $'\n'"$LAUNCH_ENV_NAMES"$'\n' in
+    *$'\n'GOFLAGS$'\n'*) ;;
+    *) goflags_set= ;;
+    esac
+  fi
+  rc=0
+  out=$(
+    cd "$wt" || exit 1
+    export GOMODCACHE="$gocache/mod" GOCACHE="$gocache/build"
+    if [ -n "$goflags_set" ]; then export GOFLAGS="$goflags"; else unset GOFLAGS; fi
+    fm_run_timed 300 go mod download </dev/null 2>&1
+  ) || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  if fm_timed_out "$rc"; then
+    echo "warning: go mod download for the sandboxed worker in $wt timed out; launching anyway, and modules it did not fetch cannot download inside the fence" >&2
+  else
+    echo "warning: go mod download for the sandboxed worker in $wt failed (exit $rc); launching anyway, and modules it did not fetch cannot download inside the fence" >&2
+  fi
+  [ -z "$out" ] || printf '%s\n' "$out" | tail -n 5 | sed 's/^/  /' >&2
+  return 0
 }
 
 resolved_existing_dir() {
@@ -5343,6 +5387,7 @@ case "$LAUNCH" in
       echo "error: could not resolve the write grant for $ID's claude sandbox" >&2
       exit 1
     }
+    claude_sandbox_go_mod_download "$WT" "$STATE_REAL/$ID.gocache"
     if [ -e "$WT/.claude/settings.json" ] || [ -L "$WT/.claude/settings.json" ]; then
       CLAUDE_SETTING_SOURCES='--setting-sources user,local '
       CLAUDE_PROJECT_MEMORY=' Claude Code has not loaded the instructions of this project for this session, so before starting the task read its CLAUDE.md, every file that CLAUDE.md imports (such as AGENTS.md), and the files under .claude/rules, and treat them as the project instructions Claude Code would otherwise have loaded.'

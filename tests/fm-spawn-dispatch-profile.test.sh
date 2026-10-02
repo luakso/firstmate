@@ -2017,6 +2017,77 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
   pass "config/claude-sandbox=on fences claude ship and scout launches with exactly the task grant"
 }
 
+# The fence refuses the host the Go proxy redirects module zips to, so a
+# sandboxed spawn of a Go module worktree runs `go mod download` outside the
+# fence into the task's own module cache, under the GOFLAGS the worker gets; a
+# failure warns without blocking the launch, and a non-Go or unsandboxed
+# worktree never runs go.
+fake_go_for_sandbox() {  # <fakebin>
+  cat > "$1/go" <<'EOF'
+#!/usr/bin/env bash
+printf '%s|%s|%s|%s|%s\n' "$(pwd -P)" "$*" "${GOMODCACHE-}" "${GOCACHE-}" "${GOFLAGS-<unset>}" >> "$FM_TEST_GO_LOG"
+if [ "${FM_TEST_GO_STATUS:-0}" != 0 ]; then
+  echo "go: example.com/missing@v1.0.0: fake download failure" >&2
+  exit "$FM_TEST_GO_STATUS"
+fi
+EOF
+  chmod +x "$1/go"
+}
+
+sandbox_go_case() {  # <name> <id> <sandbox> <go-module: 1|0> <go-status> [allowlist]
+  local name=$1 id=$2 sandbox_mode=$3 gomod=$4 go_status=$5 rec
+  rec=$(make_spawn_case "$name" claude "$id")
+  read_case_record "$rec"
+  printf '%s\n' "$sandbox_mode" > "$HOME_DIR/config/claude-sandbox"
+  printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
+  [ "$#" -lt 6 ] || printf '%s' "$6" > "$HOME_DIR/config/launch-env-allowlist"
+  [ "$gomod" != 1 ] || printf 'module example.com/sandboxed\n\ngo 1.22\n' > "$WT_DIR/go.mod"
+  fake_go_for_sandbox "$FAKEBIN_DIR"
+  GO_LOG="$CASE_DIR/go.log"
+  out=$(GOFLAGS=-mod=mod FM_TEST_GO_LOG="$GO_LOG" FM_TEST_GO_STATUS="$go_status" \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  rm -rf -- "/tmp/fm-$id"
+}
+
+test_claude_sandbox_downloads_go_modules_at_spawn() {
+  local out status state_real wt_real
+  sandbox_go_case sandbox-go-ok sandbox-go-ok-z40 on 1 0
+  expect_code 0 "$status" "sandboxed Go module spawn should succeed"$'\n'"$out"
+  state_real=$(cd "$HOME_DIR/state" && pwd -P)
+  wt_real=$(cd "$WT_DIR" && pwd -P)
+  [ -s "$GO_LOG" ] || fail "a sandboxed spawn of a Go module worktree did not download its modules"
+  [ "$(cat "$GO_LOG")" = "$wt_real|mod download|$state_real/sandbox-go-ok-z40.gocache/mod|$state_real/sandbox-go-ok-z40.gocache/build|-mod=mod" ] \
+    || fail "go mod download did not run in the worktree with the task's own caches and the worker's GOFLAGS"$'\n'"$(cat "$GO_LOG")"
+  [ -s "$LAUNCH_LOG" ] || fail "the sandboxed Go module worker did not launch"
+
+  # A filtered launch environment that does not keep GOFLAGS hides it from the
+  # worker, so the download must not use it either.
+  sandbox_go_case sandbox-go-allowlist sandbox-go-allow-z41 on 1 0 ''
+  expect_code 0 "$status" "sandboxed Go module spawn under a launch-env allowlist should succeed"$'\n'"$out"
+  [ "$(cut -d'|' -f5 "$GO_LOG")" = '<unset>' ] \
+    || fail "go mod download used GOFLAGS the filtered worker environment drops"$'\n'"$(cat "$GO_LOG")"
+  sandbox_go_case sandbox-go-allowlist-kept sandbox-go-keep-z42 on 1 0 $'GOFLAGS\n'
+  expect_code 0 "$status" "sandboxed Go module spawn with GOFLAGS allowlisted should succeed"$'\n'"$out"
+  [ "$(cut -d'|' -f5 "$GO_LOG")" = '-mod=mod' ] \
+    || fail "go mod download dropped GOFLAGS the launch-env allowlist keeps"$'\n'"$(cat "$GO_LOG")"
+
+  sandbox_go_case sandbox-go-fail sandbox-go-fail-z43 on 1 1
+  expect_code 0 "$status" "a failed module download must not block the sandboxed spawn"$'\n'"$out"
+  assert_contains "$out" "warning: go mod download for the sandboxed worker" "a failed module download did not warn"
+  assert_contains "$out" "fake download failure" "the download warning did not show go's error"
+  [ -s "$LAUNCH_LOG" ] || fail "the worker did not launch after a failed module download"
+
+  sandbox_go_case sandbox-go-none sandbox-go-none-z44 on 0 0
+  expect_code 0 "$status" "sandboxed non-Go spawn should succeed"$'\n'"$out"
+  [ ! -e "$GO_LOG" ] || fail "a sandboxed spawn of a non-Go worktree ran go"$'\n'"$(cat "$GO_LOG")"
+
+  sandbox_go_case sandbox-go-off sandbox-go-off-z45 off 1 0
+  expect_code 0 "$status" "unsandboxed Go module spawn should succeed"$'\n'"$out"
+  [ ! -e "$GO_LOG" ] || fail "an unsandboxed spawn ran go mod download"$'\n'"$(cat "$GO_LOG")"
+  pass "config/claude-sandbox=on downloads a Go module worktree's modules into the task cache before launch"
+}
+
 # A loaded project .claude/settings.json would run its hooks outside the fence
 # and merge its keys into it, so a sandboxed launch drops the project setting
 # source whenever the worktree carries that file, whatever it holds, and then
@@ -2266,6 +2337,7 @@ test_non_claude_harness_ignores_claude_permission_mode
 test_claude_sandbox_off_matches_absent_launch
 test_claude_sandbox_off_keeps_the_scout_completion_gate
 test_claude_sandbox_on_fences_ship_and_scout_launches
+test_claude_sandbox_downloads_go_modules_at_spawn
 test_claude_sandbox_drops_committed_project_settings
 test_claude_sandbox_invalid_refuses_before_endpoint_or_metadata
 test_claude_sandbox_refuses_without_auto_permission_mode
