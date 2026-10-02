@@ -229,6 +229,23 @@ EOF
   TASK_TMPS+=("/tmp/fm-$id")
 }
 
+# add_clone_ship_task <case-dir> <id> [harness]: like add_ship_task, but the
+# task works in its own task clone (bin/fm-task-clone-lib.sh), as a sandboxed
+# Claude ship does; the record names the clone and its layout, and ADDED_CLONE
+# holds its path.
+ADDED_CLONE=
+add_clone_ship_task() {
+  local dir=$1 id=$2 harness=${3:-claude} clone
+  add_ship_task "$dir" "$id" "$harness"
+  clone=$(FM_HOME="$dir/home" FM_ROOT="$ROOT" FM_TASK_CLONE_ROOT="$dir/clones" \
+    bash -c '. "$1/bin/fm-task-clone-lib.sh" && fm_task_clone_create "$2" "$3" "$4"' _ \
+    "$ROOT" "$dir/proj" "$id" "$dir/home") || fail "could not create task $id's clone"
+  sed -i.bak "s|^worktree=.*|worktree=$clone|" "$dir/home/state/$id.meta" && rm -f "$dir/home/state/$id.meta.bak"
+  printf '%s\n' "worktree_layout=clone" >> "$dir/home/state/$id.meta"
+  printf '%s' "$clone" > "$dir/fake/cwd"
+  ADDED_CLONE=$clone
+}
+
 run_control() {  # <case-dir> <args...>
   local dir=$1; shift
   # A claude spawn pre-registers workspace trust in the launching user's own
@@ -396,21 +413,28 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
 # worktree carries a .claude/settings.json, whatever it holds; a worktree
 # without one, and an unsandboxed relaunch, keep every source.
 test_sandboxed_relaunch_drops_committed_project_settings() {
-  local case sandbox dir id out rc
+  local case sandbox dir id out rc copy
   for case in widening absent unsandboxed; do
     id="rl-sandbox-$case"
     dir=$(new_case "sandbox-$case" "$id")
-    add_ship_task "$dir" "$id" claude
-    mkdir -p "$dir/home/config"
     sandbox=on
     [ "$case" != unsandboxed ] || sandbox=off
+    # A sandboxed relaunch reuses a task clone; an unsandboxed one any copy.
+    if [ "$sandbox" = on ]; then
+      add_clone_ship_task "$dir" "$id" claude
+      copy=$ADDED_CLONE
+    else
+      add_ship_task "$dir" "$id" claude
+      copy=$dir/wt
+    fi
+    mkdir -p "$dir/home/config"
     printf 'auto\n' > "$dir/home/config/claude-permission-mode"
     printf '%s\n' "$sandbox" > "$dir/home/config/claude-sandbox"
     if [ "$case" != absent ]; then
-      mkdir -p "$dir/wt/.claude"
-      printf '%s\n' '{"sandbox":{"filesystem":{"allowWrite":["~"]}}}' > "$dir/wt/.claude/settings.json"
-      git -C "$dir/wt" add .claude/settings.json
-      git -C "$dir/wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+      mkdir -p "$copy/.claude"
+      printf '%s\n' '{"sandbox":{"filesystem":{"allowWrite":["~"]}}}' > "$copy/.claude/settings.json"
+      git -C "$copy" add .claude/settings.json
+      git -C "$copy" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
         commit -qm "project settings ($case)" || fail "could not commit the $case project settings"
     fi
     out=$(run_control "$dir" "$id" relaunch --note "resuming with claude-sandbox=$sandbox"); rc=$?
@@ -438,6 +462,46 @@ test_sandboxed_relaunch_drops_committed_project_settings() {
     fi
   done
   pass "fm-control relaunch: a sandboxed claude relaunch drops the project setting source whenever the worktree carries project settings"
+}
+
+# A sandboxed Claude worker may write its launch directory, and a linked
+# worktree takes its project clone's shared git data with it, so a sandboxed
+# relaunch of a task recorded in a linked worktree refuses; the task's record
+# and copy are kept for a relaunch with another harness or with the sandbox off.
+# A task clone keeps its layout and relaunches sandboxed.
+test_sandboxed_relaunch_refuses_a_linked_worktree() {
+  local dir id out rc before clone
+  id=rl-sandbox-linked
+  dir=$(new_case sandbox-linked "$id")
+  add_ship_task "$dir" "$id" claude
+  mkdir -p "$dir/home/config"
+  printf 'auto\n' > "$dir/home/config/claude-permission-mode"
+  printf 'on\n' > "$dir/home/config/claude-sandbox"
+  before=$(cat "$dir/home/state/$id.meta")
+  out=$(run_control "$dir" "$id" relaunch --note "resuming under the sandbox"); rc=$?
+  [ "$rc" -ne 0 ] || fail "a sandboxed relaunch into a linked worktree succeeded"$'\n'"$out"
+  assert_contains "$out" "is a linked worktree that shares its project clone's git data" \
+    "the refusal did not name the shared git data"
+  assert_no_grep "Firstmate operational input waiting: read" "$dir/fake/literal" \
+    "a refused sandboxed relaunch launched a replacement"
+  [ "$(grep -v '^control_relaunch_tx=' "$dir/home/state/$id.meta")" = "$(printf '%s\n' "$before" | grep -v '^control_relaunch_tx=')" ] \
+    || fail "a refused sandboxed relaunch changed the task record"$'\n'"$(cat "$dir/home/state/$id.meta")"
+  [ -d "$dir/wt" ] || fail "a refused sandboxed relaunch removed the task's worktree"
+
+  id=rl-sandbox-clone
+  dir=$(new_case sandbox-clone "$id")
+  add_clone_ship_task "$dir" "$id" claude
+  clone=$ADDED_CLONE
+  mkdir -p "$dir/home/config"
+  printf 'auto\n' > "$dir/home/config/claude-permission-mode"
+  printf 'on\n' > "$dir/home/config/claude-sandbox"
+  out=$(run_control "$dir" "$id" relaunch --note "resuming in the clone"); rc=$?
+  expect_code 0 "$rc" "a sandboxed relaunch of a task clone should succeed"$'\n'"$out"
+  assert_grep "cd -- '$clone'" "$dir/fake/keys" "the sandboxed relaunch did not enter the task clone"
+  assert_grep '"sandbox":{' "$dir/fake/literal" "the sandboxed relaunch of a task clone lost the fence"
+  [ "$(meta_field "$dir" "$id" worktree)" = "$clone" ] || fail "the relaunch moved the task off its clone"
+  [ "$(meta_field "$dir" "$id" worktree_layout)" = clone ] || fail "the relaunch dropped the clone layout from the record"
+  pass "fm-control relaunch: a sandboxed relaunch refuses a linked worktree and keeps a task clone's layout"
 }
 
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text() {
@@ -2438,6 +2502,7 @@ test_relaunch_moves_a_drifted_item_back_in_flight() {
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_sandboxed_relaunch_drops_committed_project_settings
+test_sandboxed_relaunch_refuses_a_linked_worktree
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text
 test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven
 test_relaunch_from_linked_home_preserves_recorded_worktree

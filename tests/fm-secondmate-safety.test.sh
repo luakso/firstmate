@@ -1956,6 +1956,70 @@ EOF
   pass "secondmate teardown raw-removes plain-clone homes, including a leaked read-only strip dir"
 }
 
+# A secondmate's own sandboxed Claude crewmate works in a task clone
+# (bin/fm-task-clone-lib.sh) outside the secondmate home. Forced retirement
+# removes that clone once its marker proves it is the child's, and refuses
+# before removing anything when the marker names another task.
+test_secondmate_force_teardown_removes_child_task_clone() {
+  local home subhome childproj clone fakebin log variant
+  for variant in owned foreign; do
+    home="$TMP_ROOT/force-clone-$variant-home"
+    subhome="$TMP_ROOT/force-clone-$variant-subhome"
+    childproj="$subhome/projects/alpha"
+    mkdir -p "$home/state" "$home/data" "$subhome/state"
+    fm_git_init_commit "$childproj"
+    printf 'domain\n' > "$subhome/.fm-secondmate-home"
+    clone=$(FM_HOME="$subhome" FM_ROOT="$ROOT" FM_TASK_CLONE_ROOT="$TMP_ROOT/force-clone-$variant-root" \
+      bash -c '. "$1/bin/fm-task-clone-lib.sh" && fm_task_clone_create "$2" child "$3"' _ \
+      "$ROOT" "$childproj" "$subhome") || fail "could not create the child's task clone ($variant)"
+    git -C "$clone" commit -q --allow-empty -m 'unlanded child work'
+    if [ "$variant" = foreign ]; then
+      printf 'another-child\n%s\n' "$(cd "$subhome" && pwd -P)" > "$TMP_ROOT/force-clone-$variant-root/child/.fm-task-clone"
+    fi
+    cat > "$home/state/domain.meta" <<EOF
+window=firstmate:fm-domain
+worktree=$subhome
+project=$subhome
+harness=echo
+kind=secondmate
+mode=secondmate
+yolo=off
+home=$subhome
+projects=alpha
+EOF
+    printf '%s\n' '- domain - design domain (home: '"$subhome"'; scope: design domain; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
+    cat > "$subhome/state/child.meta" <<EOF
+window=firstmate:fm-child
+worktree=$clone
+project=$childproj
+harness=claude
+kind=ship
+mode=no-mistakes
+yolo=off
+worktree_layout=clone
+EOF
+    fakebin=$(make_fake_tmux "$TMP_ROOT/force-clone-$variant-fake")
+    log="$TMP_ROOT/force-clone-$variant-fake/tmux.log"
+    if [ "$variant" = owned ]; then
+      PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/force-clone-$variant-fake/pane.txt" \
+        "$ROOT/bin/fm-teardown.sh" domain --force >/dev/null 2>/dev/null \
+        || fail "force teardown failed to discard a child's task clone"
+      [ ! -d "$subhome" ] || fail "force teardown did not remove the retired secondmate home"
+      [ ! -e "$TMP_ROOT/force-clone-$variant-root/child" ] || fail "force teardown did not remove the child's task clone"
+      grep -F "treehouse return" "$log" >/dev/null && fail "force teardown tried to return a child task clone through treehouse"
+    else
+      if PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/force-clone-$variant-fake/pane.txt" \
+        "$ROOT/bin/fm-teardown.sh" domain --force >/dev/null 2>&1; then
+        fail "force teardown removed a child clone whose marker names another task"
+      fi
+      [ -d "$clone" ] || fail "a refused force teardown removed the child's clone"
+      [ -d "$subhome" ] || fail "a refused force teardown removed the secondmate home"
+      [ -e "$subhome/state/child.meta" ] || fail "a refused force teardown removed the child record"
+    fi
+  done
+  pass "secondmate force teardown removes a child's own task clone and refuses one it cannot prove"
+}
+
 test_secondmate_force_teardown_discards_child_work() {
   local home subhome childproj childwt fakebin log
   home="$TMP_ROOT/force-teardown-home"
@@ -3080,6 +3144,7 @@ test_secondmate_force_teardown_preserves_nested_restore_status
 test_secondmate_teardown_refuses_failed_leased_home_return
 test_secondmate_teardown_removes_plain_clone_home_without_treehouse_return
 test_secondmate_force_teardown_discards_child_work
+test_secondmate_force_teardown_removes_child_task_clone
 test_secondmate_force_teardown_refuses_duplicated_child_slot
 test_secondmate_force_teardown_preserves_child_on_unproven_lock
 test_secondmate_force_teardown_allows_non_state_operational_dir_symlinks_inside_home

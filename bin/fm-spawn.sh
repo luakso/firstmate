@@ -228,7 +228,9 @@
 #   configured host for a remote home. Skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from both the spawning project and its repository's
-#   primary checkout, including when the spawning project is a linked worktree.
+#   primary checkout, including when the spawning project is a linked worktree;
+#   a sandboxed Claude task's own clone (config/claude-sandbox below) is such a
+#   root with a repository of its own.
 #   On the backends that discover that path by reading the task pane's own cwd,
 #   the same isolation test screens every read: a pane still showing the project
 #   or the repository primary while `treehouse get` prepares the slot is waited
@@ -331,6 +333,15 @@
 #   fetch from and publish to the Gerrit host, which the fence cannot reach, and
 #   so does a sandboxed ship or scout whose brief carries the --herdr-lab
 #   contract, because its worker must drive Herdr and tmux over Unix sockets.
+#   With the sandbox on, a fresh ship or scout works in its own task clone
+#   instead of a treehouse pool slot: fm-spawn makes it with
+#   bin/fm-task-clone-lib.sh (which owns why and where), records
+#   worktree_layout=clone, and registers its Claude trust with
+#   fm-claude-trust.sh --task-clone. A linked worktree would put the project
+#   clone's shared git data inside the fence's write grant, so backend=orca,
+#   whose worktrees are linked, refuses a sandboxed launch, and so does a
+#   sandboxed relaunch of a task recorded in a linked worktree. A clone task
+#   relaunched unsandboxed keeps working in its clone.
 #   With the sandbox on, the launch also gives the worker its own disk-backed
 #   GOCACHE and GOMODCACHE under state/<id>.gocache, and pre-creates the task's
 #   status log so its append grant has a file to cover. When the worktree
@@ -694,6 +705,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-worker-account-lib.sh
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
+# shellcheck source=bin/fm-task-clone-lib.sh
+. "$SCRIPT_DIR/fm-task-clone-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -1260,6 +1273,7 @@ SPAWN_TASK_SET_LOCK_HELD=0
 SPAWN_TREEHOUSE_PROJECT_LOCK=
 SPAWN_TREEHOUSE_PROJECT_LOCK_HELD=0
 SPAWN_SLOT_CLAIMED=0
+SPAWN_TASK_CLONE_CREATED=0
 RELAUNCH_REPLACEMENT_PENDING=0
 RELAUNCH_REPLACEMENT_BUSY_GEN=
 RELAUNCH_REPLACEMENT_HARNESS=
@@ -1415,6 +1429,20 @@ spawn_abort_cleanup() {
   if [ "$SPAWN_TREEHOUSE_PROJECT_LOCK_HELD" = 1 ]; then
     SPAWN_TREEHOUSE_PROJECT_LOCK_HELD=0
     fm_lock_release "$SPAWN_TREEHOUSE_PROJECT_LOCK" || true
+  fi
+  # A task clone this spawn made holds no work until a worker runs in it, so an
+  # abort before any record names it removes it. Once a worker may be running in
+  # it (launch sent, endpoint not closed) it is left in place, like the git
+  # hooks below, and named so it can be reconciled.
+  if [ "$SPAWN_TASK_CLONE_CREATED" = 1 ] && [ "$status" -ne 0 ] &&
+    [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
+    SPAWN_TASK_CLONE_CREATED=0
+    if [ "$SPAWN_LAUNCH_SENT" = 0 ] || [ "$SPAWN_ENDPOINT_CLOSED" = 1 ]; then
+      fm_task_clone_remove "$WT" "$ID" "$FM_HOME" ||
+        echo "warning: could not remove task $ID's clone $WT after the aborted spawn" >&2
+    else
+      echo "warning: leaving task $ID's clone $WT in place: a worker may still be running in it and no task record names it" >&2
+    fi
   fi
   if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
     SPAWN_TASK_SET_LOCK_HELD=0
@@ -1853,6 +1881,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     fi
   fi
   RELAUNCH_WT=$(fm_meta_get "$RELAUNCH_META" worktree)
+  RELAUNCH_WT_LAYOUT=$(fm_meta_get "$RELAUNCH_META" worktree_layout)
   [ -n "$RELAUNCH_WT" ] && [ -d "$RELAUNCH_WT" ] || {
     echo "error: task $ID's recorded worktree '${RELAUNCH_WT:-none}' is missing; refusing to relaunch without the local copy its work lives in" >&2
     exit 1
@@ -2325,6 +2354,28 @@ if [ "$CLAUDE_SANDBOX" = on ] && [ "$HARNESS" = claude ] && [ "$KIND" != secondm
     exit 1
   fi
   CLAUDE_SANDBOX_ACTIVE=1
+fi
+# A sandboxed worker's Bash may write its launch directory, and when that is a
+# linked worktree Claude Code grants the project clone's shared git directory
+# with it, so a sandboxed ship or scout works in its own task clone instead of a
+# pool slot (bin/fm-task-clone-lib.sh owns why and how). A relaunch reuses the
+# recorded copy and Orca provides its own linked worktree, so neither can move
+# a sandboxed worker into a clone: both refuse rather than fence a worker whose
+# project git data would stay writable. An unsandboxed relaunch of a clone task
+# keeps working in its clone.
+TASK_CLONE=0
+if [ "$RELAUNCH" -eq 1 ]; then
+  [ "${RELAUNCH_WT_LAYOUT:-}" != clone ] || TASK_CLONE=1
+elif [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ] && [ "$BACKEND" != orca ]; then
+  TASK_CLONE=1
+fi
+if [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ] && [ "$TASK_CLONE" != 1 ]; then
+  if [ "$RELAUNCH" -eq 1 ]; then
+    echo "error: config/claude-sandbox is on, but task $ID's recorded worktree ${RELAUNCH_WT:-} is a linked worktree that shares its project clone's git data, which the sandbox would leave writable; relaunch it with a non-Claude harness, or write off to config/claude-sandbox" >&2
+  else
+    echo "error: config/claude-sandbox is on, but backend=orca provides a linked worktree that shares its project clone's git data, which the sandbox would leave writable; spawn $ID on another backend or with a non-Claude harness, or write off to config/claude-sandbox" >&2
+  fi
+  exit 1
 fi
 
 # muse, gemini, agy, and devin are verified as CREWMATE/SCOUT adapters only. A secondmate is
@@ -2871,11 +2922,11 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
 # ship or scout's claude --settings JSON, escaped for the single-quoted shell
 # word it lands in. Claude Code (verified 2.1.283, Linux bubblewrap) then runs
 # every Bash command with the filesystem read-only outside the pane cwd, its
-# private TMPDIR, allowWrite, and - because the cwd is a linked worktree - the
-# project clone's whole shared .git (every ref, the object store, and other
-# tasks' worktrees/ entries; only its hooks/ and config stay denied), so the
-# fence guards everything outside the project clone but not the clone's shared
-# git data. Claude's protected paths (.claude/* such as .claude/skills,
+# private TMPDIR, and allowWrite. The cwd is the task's own clone
+# (bin/fm-task-clone-lib.sh), never a linked worktree, whose shared .git Claude
+# Code would also grant; inside the clone its .git/hooks and .git/config stay
+# denied, so the project clone's git data and every other task's copy stay
+# read-only. Claude's protected paths (.claude/* such as .claude/skills,
 # .mcp.json, .vscode, .idea) stay read-only even inside the cwd, which in a
 # firstmate worktree covers .agents/skills through its tracked .claude/skills
 # symlink;
@@ -3141,7 +3192,7 @@ else
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ] && [ "$TASK_CLONE" != 1 ]; then
   SPAWN_TREEHOUSE_PROJECT_LOCK=$(fm_treehouse_project_lock_path "$PROJ_ABS") || {
     echo "error: could not resolve the shared Treehouse project lock for $PROJ_ABS" >&2
     exit 1
@@ -4389,6 +4440,15 @@ elif [ "$RELAUNCH" -eq 1 ]; then
     fi
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
+elif [ "$TASK_CLONE" = 1 ]; then
+  # The clone is made here rather than by the pane, so no treehouse subshell or
+  # cwd poll is involved; the explicit enter below moves the pane into it.
+  WT=$(fm_task_clone_create "$PROJ_ABS" "$ID" "$FM_HOME") || {
+    echo "error: could not create task $ID's clone of $PROJ_ABS; inspect window $T" >&2
+    exit 1
+  }
+  SPAWN_TASK_CLONE_CREATED=1
+  validate_spawn_worktree "task clone" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   spawn_send_text_line "$WT_TARGET" 'treehouse get'
 
@@ -4511,6 +4571,8 @@ case "$HARNESS" in
 claude*)
   if [ "$KIND" = secondmate ]; then
     spawn_trust_args=(--secondmate-home "$PROJ_ABS" "$ID")
+  elif [ "$TASK_CLONE" = 1 ]; then
+    spawn_trust_args=(--task-clone "$WT" "$PROJ_ABS")
   else
     spawn_trust_args=("$WT" "$PROJ_ABS")
   fi
@@ -4560,7 +4622,9 @@ STATE_REAL=$(cd "$STATE" && pwd -P)
 TURNEND="$STATE_REAL/$ID.turn-ended"
 exclude_path() {
   local rel=$1 EXCL
-  EXCL=$(git -C "$WT" rev-parse --git-path info/exclude 2>/dev/null || true)
+  # Absolute: a standalone repository such as a task clone answers --git-path
+  # relative to the worktree, which this process's own cwd would misplace.
+  EXCL=$(git -C "$WT" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || true)
   [ -n "$EXCL" ] || return 0
   mkdir -p "$(dirname "$EXCL")"
   grep -qxF "$rel" "$EXCL" 2>/dev/null || echo "$rel" >>"$EXCL"
@@ -5061,6 +5125,11 @@ preserve_relaunch_meta() {
   # default path's meta stays byte-identical (absent backend= means tmux;
   # data/fm-backend-design-d7's P1 compatibility contract).
   [ "$BACKEND" = tmux ] || echo "backend=$BACKEND"
+  # Written only for a task clone, so a pool-slot record stays byte-identical;
+  # a relaunch keeps it through preserve_relaunch_meta.
+  if [ "$RELAUNCH" -eq 0 ] && [ "$TASK_CLONE" = 1 ]; then
+    echo "worktree_layout=clone"
+  fi
   if [ "$BACKEND" = herdr ]; then
     echo "herdr_session=$HERDR_SES"
     echo "herdr_workspace_id=$HERDR_WORKSPACE_ID"

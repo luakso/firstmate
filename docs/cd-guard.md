@@ -26,11 +26,12 @@ It is a silent no-op (exit 0, no output) everywhere else, so it never interferes
 
 `bin/fm-cd-pretool-check.sh` owns its checkout detection; the turn-end guard's marker-aware scope is a separate contract (`docs/turnend-guard.md`).
 A plain, non-worktree checkout has `git rev-parse --git-dir` equal to `git rev-parse --git-common-dir`.
-A crewmate or scout task worktree - the shape `bin/fm-spawn.sh` always hands out - is a linked git worktree where the two differ, so the guard is inert there.
+A crewmate or scout task worktree - the shape `bin/fm-spawn.sh` hands out outside the Claude sandbox - is a linked git worktree where the two differ, so the guard is inert there.
 The checkout must also carry `AGENTS.md` and `bin/`, and any failure to confirm the primary is treated as inert, never as a block.
 
 The cd-guard does not inspect `.fm-secondmate-home`.
 It therefore applies in a git-cloned secondmate home where git-dir equals git-common-dir, but remains inert in a treehouse-leased secondmate home that is itself a linked worktree.
+A sandboxed Claude task's own clone ([`bin/fm-task-clone-lib.sh`](../bin/fm-task-clone-lib.sh)) is a plain checkout too, so the guard also stays inert where the task-clone marker sits beside the checkout.
 Secondmate child crew and scout worktrees are likewise inert under the linked-worktree test.
 
 ## Block vs allow

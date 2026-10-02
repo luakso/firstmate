@@ -104,6 +104,8 @@
 . "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-nm-run-lib.sh"
 # shellcheck source=bin/fm-brief-heading-lib.sh
 . "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-brief-heading-lib.sh"
+# shellcheck source=bin/fm-task-clone-lib.sh
+. "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-task-clone-lib.sh"
 
 fm_brief_worker_role() {  # <state-dir> <task-id>
   local state=$1 task_id=$2
@@ -428,7 +430,7 @@ Delivery contract: mode=local-only
 Ship branch: $branch
 This task ships **local-only**: no remote, no PR, no pipeline.
 The task is complete only when committed on your branch \`$branch\`. Do NOT push, do NOT open a PR, do NOT merge.
-A \`done:\` is accepted when the named head is on this project's shared local branch, not only on a detached copy; the check tests that head, not merely that a branch moved.
+A \`done:\` is accepted when the named head is on this project's shared local branch, or on a branch of your own task clone when you work in one, not only on a detached copy; the check tests that head, not merely that a branch moved.
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
 When it is implemented and committed, append \`done [at=<epoch>]: ready in branch $branch\` to the status file and stop.
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
@@ -623,12 +625,18 @@ fm_dod_nm_custody_returned() {  # <worktree>
 }
 
 # 0 when <sha> is reachable from a ref that survives the disposable worktree:
-# any remote-tracking ref, or - for local-only - heads in the project clone.
+# any remote-tracking ref, or - for local-only - heads in the project clone. A
+# sandboxed task's own clone (bin/fm-task-clone-lib.sh) shares no refs with the
+# project clone: its local branches stay its own until bin/fm-merge-local.sh
+# imports them, and teardown keeps the clone until that merge has landed, so for
+# local-only its own heads stand in for the project's.
 fm_dod_named_head_reachable_outside_worktree() {  # <worktree> <project> <mode> <sha>
   local wt=$1 project=$2 mode=$3 sha=$4
   fm_dod_ref_contains "$wt" refs/remotes "$sha" && return 0
   fm_dod_ref_contains "$project" refs/remotes "$sha" && return 0
-  [ "$mode" = local-only ] && fm_dod_ref_contains "$project" refs/heads "$sha"
+  [ "$mode" = local-only ] || return 1
+  fm_dod_ref_contains "$project" refs/heads "$sha" && return 0
+  fm_task_clone_shaped "$wt" && fm_dod_ref_contains "$wt" refs/heads "$sha"
 }
 
 # 0 when <line> is not a ship done: to gate, when it names the task's recorded

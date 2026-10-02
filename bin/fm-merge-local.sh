@@ -15,6 +15,12 @@
 # merge, so a captain approval must be recorded as an `answer --release` before
 # this entrypoint is invoked. The lock ends when the fast-forward returns;
 # docs/captain-hold-lifecycle.md owns the accepted merge-to-cleanup residual.
+# A sandboxed task's branch lives only in its own task clone
+# (state/<id>.meta worktree_layout=clone; bin/fm-task-clone-lib.sh), so every
+# check reads it there, through the clone's view of the project's objects, and
+# only after the captain-hold check is it fetched into the project under the
+# temporary ref refs/fm-task-clone/<task-id>, fast-forwarded onto, and the
+# temporary ref deleted again; the project never gains a branch for it.
 # Usage: fm-merge-local.sh <task-id>
 set -eu
 
@@ -26,6 +32,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-backlog-transition-lib.sh
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
+# shellcheck source=bin/fm-task-clone-lib.sh
+. "$SCRIPT_DIR/fm-task-clone-lib.sh"
 if [ "$#" -ne 1 ] || ! fm_pr_task_id_valid "$1"; then
   echo "error: invalid local merge request" >&2
   exit 2
@@ -59,7 +67,9 @@ fi
 MERGE_EXPECTED_SPAWN_GEN=$FM_BACKLOG_META_SPAWN_GEN
 
 MERGE_CONTROL_LOCK=
+IMPORT_REF=
 merge_control_cleanup() {
+  [ -z "$IMPORT_REF" ] || git -C "$PROJ" update-ref -d "$IMPORT_REF" 2>/dev/null || true
   [ -z "$MERGE_CONTROL_LOCK" ] || fm_lock_release "$MERGE_CONTROL_LOCK" || true
 }
 trap merge_control_cleanup EXIT
@@ -100,9 +110,18 @@ if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
   echo "error: task $ID has an invalid recorded ship branch '$BRANCH'" >&2
   exit 1
 fi
-git -C "$PROJ" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null || { echo "error: branch $BRANCH does not exist in $PROJ" >&2; exit 1; }
+CLONE=
+if [ "$(grep '^worktree_layout=' "$META" | cut -d= -f2- || true)" = clone ]; then
+  CLONE=$(grep '^worktree=' "$META" | cut -d= -f2- || true)
+  fm_task_clone_owned "$CLONE" "$ID" "$FM_HOME" || { echo "error: task $ID's recorded clone ${CLONE:-<missing>} is not the task clone this home made for it; refusing to merge from it" >&2; exit 1; }
+  MERGE_REPO=$CLONE
+else
+  MERGE_REPO=$PROJ
+fi
+BRANCH_TIP=$(git -C "$MERGE_REPO" rev-parse --verify --quiet "refs/heads/$BRANCH^{commit}") || { echo "error: branch $BRANCH does not exist in $MERGE_REPO" >&2; exit 1; }
 
 DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
+DEFAULT_TIP=$(git -C "$PROJ" rev-parse --verify --quiet "refs/heads/$DEFAULT^{commit}") || { echo "error: cannot resolve local $DEFAULT in $PROJ" >&2; exit 1; }
 
 # The project's main checkout must be on its default branch and clean, so the
 # fast-forward lands predictably (firstmate never writes here otherwise).
@@ -113,8 +132,9 @@ if [ -n "$(git -C "$PROJ" status --porcelain 2>/dev/null | head -1)" ]; then
   exit 1
 fi
 
-# Clean fast-forward only: DEFAULT must be an ancestor of BRANCH.
-if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BRANCH"; then
+# Clean fast-forward only: DEFAULT must be an ancestor of BRANCH. A task clone
+# reads the project's commits through its alternates, so it can answer this.
+if ! git -C "$MERGE_REPO" merge-base --is-ancestor "$DEFAULT_TIP" "$BRANCH_TIP"; then
   echo "REFUSED: $BRANCH is not a fast-forward of $DEFAULT (it has diverged)." >&2
   echo "Have the crewmate rebase $BRANCH onto $DEFAULT, then retry." >&2
   exit 1
@@ -136,7 +156,22 @@ case "$hold_status" in
     ;;
 esac
 merge_status=0
-git -C "$PROJ" merge --ff-only "$BRANCH" >/dev/null || merge_status=$?
+if [ -n "$CLONE" ]; then
+  IMPORT_REF="refs/fm-task-clone/$ID"
+  git -C "$PROJ" fetch --quiet --no-tags --no-write-fetch-head "$CLONE" "+refs/heads/$BRANCH:$IMPORT_REF" || {
+    echo "error: could not fetch $BRANCH from task clone $CLONE into $PROJ" >&2
+    exit 1
+  }
+  [ "$(git -C "$PROJ" rev-parse --verify --quiet "$IMPORT_REF^{commit}" || true)" = "$BRANCH_TIP" ] || {
+    echo "error: $BRANCH moved in task clone $CLONE while it was being fetched; refusing to merge an unchecked head" >&2
+    exit 1
+  }
+fi
+git -C "$PROJ" merge --ff-only "$BRANCH_TIP" >/dev/null || merge_status=$?
+if [ -n "$IMPORT_REF" ]; then
+  git -C "$PROJ" update-ref -d "$IMPORT_REF" || true
+  IMPORT_REF=
+fi
 fm_lock_release "$MERGE_CONTROL_LOCK" || true
 MERGE_CONTROL_LOCK=
 [ "$merge_status" -eq 0 ] || exit "$merge_status"

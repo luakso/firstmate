@@ -240,6 +240,45 @@ test_task_marker_refuses_the_primary_checkout() {
   pass "a task marker refuses execution in the primary checkout and leaves worktrees and inspection alone"
 }
 
+# A sandboxed Claude task works in its own clone (bin/fm-task-clone-lib.sh),
+# which is a standalone repository like the primary: its task-clone marker is
+# what lets the marked run proceed there, while the primary still refuses with
+# the same library installed.
+test_task_marker_runs_in_a_task_clone() {
+  local tmp repo linked clone out rc tree
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-clone.XXXXXX")
+  repo="$tmp/repo"
+  linked="$tmp/linked"
+  init_primary_and_linked_worktree "$repo" "$linked"
+  mkdir -p "$tmp/home"
+  clone=$(FM_HOME="$tmp/home" FM_ROOT="$ROOT" FM_TASK_CLONE_ROOT="$tmp/clones" \
+    bash -c '. "$1/bin/fm-task-clone-lib.sh" && fm_task_clone_create "$2" probe-task "$3"' _ \
+    "$ROOT" "$repo" "$tmp/home") || { rm -rf "$tmp"; fail "could not create the task clone fixture"; }
+  for tree in "$repo" "$clone"; do
+    mkdir -p "$tree/bin" "$tree/tests"
+    cp "$RUNNER" "$tree/bin/fm-test-run.sh"
+    cp "$ROOT/bin/fm-task-clone-lib.sh" "$ROOT/bin/fm-path-lib.sh" "$tree/bin/"
+    cp "$ROOT/tests/git-config-helpers.sh" "$tree/tests/"
+    chmod +x "$tree/bin/fm-test-run.sh"
+    cat >"$tree/tests/probe.test.sh" <<PROBE
+#!/usr/bin/env bash
+echo "ok - probe suite"
+: >"$tree/ran"
+PROBE
+    chmod +x "$tree/tests/probe.test.sh"
+  done
+
+  FM_TASK_ID=probe-task "$clone/bin/fm-test-run.sh" tests/probe.test.sh >/dev/null 2>&1 \
+    || { rm -rf "$tmp"; fail "the runner must run in a sandboxed task's own clone"; }
+  assert_present "$clone/ran" "the task-clone run did not execute its suite"
+  out=$(FM_TASK_ID=probe-task "$repo/bin/fm-test-run.sh" tests/probe.test.sh 2>&1) && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "the primary with the task-clone library must still refuse"; }
+  assert_contains "$out" "primary checkout" "refusal did not name the primary checkout"
+  assert_absent "$repo/ran" "the refused primary run still executed a suite"
+  rm -rf "$tmp"
+  pass "a task marker runs in a sandboxed task's own clone and still refuses the primary"
+}
+
 test_changed_runner_surfaces_select_their_family() {
   local tmp repo listed
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-owner-scope.XXXXXX")
@@ -1782,6 +1821,7 @@ test_family_selection
 test_single_script_selection
 test_changed_file_selection_is_conservative
 test_task_marker_refuses_the_primary_checkout
+test_task_marker_runs_in_a_task_clone
 test_changed_runner_surfaces_select_their_family
 test_shell_line_ending_policy_selects_runner_contract
 test_changed_dependency_selection_and_unmapped_failure

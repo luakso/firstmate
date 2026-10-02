@@ -53,6 +53,15 @@
 #   (w) index.lock mtime read failure                         -> lock kept, REFUSE
 #   (x) transient lock cleared after first failed return      -> retry ALLOW
 #   (y) persistent lock (never clears, not provably stale)    -> REFUSE loudly
+#
+# Also covers a sandboxed task's own clone (state/<id>.meta worktree_layout=clone,
+# bin/fm-task-clone-lib.sh), which is removed rather than returned to a pool:
+#   (z1) clone + no-mistakes + HEAD on the clone's origin ref -> ALLOW, clone removed, no treehouse
+#   (z2) clone + no-mistakes + truly unpushed                 -> REFUSE, clone kept
+#   (z3) clone + local-only + merged into the project's main  -> ALLOW, clone removed
+#   (z4) clone + local-only + not merged                      -> REFUSE, clone kept
+#   (z5) clone whose marker names another task, even --force  -> REFUSE, nothing removed
+#   (z6) clone scout                                          -> ALLOW, clone removed
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -186,6 +195,61 @@ SH
   touch "$case_dir/state/.last-watcher-beat"
 
   printf '%s\n' "$case_dir"
+}
+
+# A case whose task works in its own clone instead of the linked worktree: the
+# clone is made by the production library under $CASE/clones, for a home at
+# $CASE/home, and starts the task branch from origin's main. The linked $CASE/wt stays
+# as another task's copy of the same project. Echoes the case dir.
+make_clone_case() {
+  local name=$1 case_dir clone
+  case_dir=$(make_case "$name")
+  # treehouse must never be reached for a clone, so this stub records any call.
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$case_dir/treehouse.log"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+  mkdir -p "$case_dir/home"
+  clone=$(FM_HOME="$case_dir/home" FM_ROOT="$ROOT" FM_TASK_CLONE_ROOT="$case_dir/clones" \
+    bash -c '. "$1/bin/fm-task-clone-lib.sh" && fm_task_clone_create "$2" task-x1 "$3"' _ \
+    "$ROOT" "$case_dir/project" "$case_dir/home") || fail "$name: could not create the task clone"
+  git -C "$clone" fetch -q origin || fail "$name: could not fetch origin into the task clone"
+  git -C "$clone" checkout -q -b fm/task-x1 origin/main || fail "$name: could not start the task branch"
+  printf '%s\n' "$case_dir"
+}
+
+clone_path() {  # <case-dir>
+  printf '%s/clones/task-x1/project\n' "$1"
+}
+
+write_clone_meta() {  # <case-dir> <mode> <kind>
+  local case_dir=$1 mode=$2 kind=$3
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=firstmate:fm-task-x1" \
+    "endpoint_task_id=task-x1" \
+    "worktree=$(clone_path "$case_dir")" \
+    "project=$case_dir/project" \
+    "kind=$kind" \
+    "mode=$mode" \
+    "worktree_layout=clone" \
+    "spawn_gen=teardown-test-task-x1"
+}
+
+# Commit a real file change in the task clone, so the content-in-default
+# fallback cannot mistake it for work already on main. Args: case_dir [message]
+clone_commit() {
+  local clone msg=${2:-clone work}
+  clone=$(clone_path "$1")
+  printf '%s\n' "$msg" > "$clone/clone-work.txt"
+  git -C "$clone" add clone-work.txt
+  git -C "$clone" -c user.email=t@t -c user.name=t commit -q -m "$msg"
+}
+
+run_clone_teardown() {
+  local case_dir=$1; shift
+  FM_HOME="$case_dir/home" run_teardown "$case_dir" "$@"
 }
 
 # Write a meta file for the task. Args: case_dir mode kind
@@ -781,6 +845,125 @@ test_local_only_merged_to_local_main_allows() {
   expect_code 0 "$rc" "merged-main: teardown should succeed when work is merged into local main"
   ! grep -q REFUSED "$case_dir/stderr" || fail "merged-main: teardown printed a REFUSED line"
   pass "local-only worktree with work merged into local main is torn down (no regression)"
+}
+
+test_clone_pushed_work_is_removed_without_treehouse() {
+  local case_dir rc
+  case_dir=$(make_clone_case clone-nm-pushed)
+  write_clone_meta "$case_dir" no-mistakes ship
+  clone_commit "$case_dir" "shippable work"
+  git -C "$(clone_path "$case_dir")" push -q origin fm/task-x1
+
+  set +e
+  run_clone_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "clone-nm-pushed: teardown should succeed when the clone's HEAD is on origin"$'\n'"$(cat "$case_dir/stderr")"
+  assert_absent "$case_dir/clones/task-x1" "clone-nm-pushed: teardown left the task clone's directory behind"
+  assert_absent "$case_dir/treehouse.log" "clone-nm-pushed: teardown tried to return a task clone to a treehouse pool"
+  assert_present "$case_dir/wt" "clone-nm-pushed: teardown touched another task's worktree"
+  assert_absent "$case_dir/state/task-x1.meta" "clone-nm-pushed: teardown kept the task record"
+  pass "a task clone whose work is on origin is removed whole, never returned to a pool"
+}
+
+test_clone_unpushed_work_refuses_and_keeps_the_clone() {
+  local case_dir rc
+  case_dir=$(make_clone_case clone-nm-unpushed)
+  write_clone_meta "$case_dir" no-mistakes ship
+  clone_commit "$case_dir" "unpushed work"
+
+  set +e
+  run_clone_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "clone-nm-unpushed: teardown should refuse"
+  grep -q REFUSED "$case_dir/stderr" || fail "clone-nm-unpushed: no REFUSED line in stderr"
+  [ "$(git -C "$(clone_path "$case_dir")" log -1 --format=%s)" = "unpushed work" ] \
+    || fail "clone-nm-unpushed: the refused teardown lost the clone's unlanded commit"
+  assert_present "$case_dir/state/task-x1.meta" "clone-nm-unpushed: the refused teardown removed the task record"
+  pass "a task clone holding unlanded work is refused and kept"
+}
+
+test_clone_local_only_merged_into_project_main_allows() {
+  local case_dir rc
+  case_dir=$(make_clone_case clone-local-merged)
+  write_clone_meta "$case_dir" local-only ship
+  clone_commit "$case_dir" "merged work"
+  # The project clone cannot see the clone's own objects, so the local merge
+  # fetches them first (bin/fm-merge-local.sh does the same through a temp ref).
+  git -C "$case_dir/project" fetch -q --no-tags "$(clone_path "$case_dir")" "+refs/heads/fm/task-x1:refs/fm-task-clone/task-x1"
+  git -C "$case_dir/project" merge -q --ff-only refs/fm-task-clone/task-x1
+  git -C "$case_dir/project" update-ref -d refs/fm-task-clone/task-x1
+
+  set +e
+  run_clone_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "clone-local-merged: teardown should succeed once the project's main holds the clone's work"$'\n'"$(cat "$case_dir/stderr")"
+  assert_absent "$case_dir/clones/task-x1" "clone-local-merged: teardown left the task clone behind"
+  pass "a local-only task clone merged into the project's main is torn down"
+}
+
+test_clone_local_only_unmerged_refuses() {
+  local case_dir rc
+  case_dir=$(make_clone_case clone-local-unmerged)
+  write_clone_meta "$case_dir" local-only ship
+  clone_commit "$case_dir" "unmerged work"
+
+  set +e
+  run_clone_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "clone-local-unmerged: teardown should refuse"
+  grep -q "REFUSED: local-only worktree" "$case_dir/stderr" || fail "clone-local-unmerged: no local-only REFUSED line"$'\n'"$(cat "$case_dir/stderr")"
+  assert_present "$(clone_path "$case_dir")" "clone-local-unmerged: the refused teardown removed the task clone"
+  pass "a local-only task clone with work not yet in the project's main is refused"
+}
+
+test_clone_with_foreign_marker_refuses_even_forced() {
+  local case_dir rc
+  case_dir=$(make_clone_case clone-foreign-marker)
+  write_clone_meta "$case_dir" no-mistakes ship
+  printf 'another-task\n%s\n' "$(cd "$case_dir/home" && pwd -P)" > "$case_dir/clones/task-x1/.fm-task-clone"
+
+  set +e
+  run_clone_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "clone-foreign-marker: teardown should refuse a clone this task does not own"
+  grep -q "is not the task clone this home made for it" "$case_dir/stderr" \
+    || fail "clone-foreign-marker: refusal did not name the ownership proof"$'\n'"$(cat "$case_dir/stderr")"
+  assert_present "$(clone_path "$case_dir")" "clone-foreign-marker: teardown removed a clone it could not prove its own"
+  assert_present "$case_dir/state/task-x1.meta" "clone-foreign-marker: teardown removed the task record"
+  pass "a recorded clone whose marker names another task is refused, even with --force"
+}
+
+test_clone_scout_is_removed() {
+  local case_dir rc
+  case_dir=$(make_clone_case clone-scout)
+  write_clone_meta "$case_dir" no-mistakes scout
+  clone_commit "$case_dir" "scratch"
+  mkdir -p "$case_dir/data/task-x1"
+  printf '# Report\n\n## Captain questions\nNone.\n' > "$case_dir/data/task-x1/report.md"
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$case_dir/home" FM_STATE_OVERRIDE="$case_dir/state" \
+    FM_DATA_OVERRIDE="$case_dir/data" FM_CONFIG_OVERRIDE="$case_dir/config" \
+    PATH="$case_dir/fakebin:$PATH" \
+    "$ROOT/bin/fm-captain-hold.sh" complete task-x1 --none >/dev/null \
+    || fail "clone-scout: could not record the scout's completed captain-call inventory"
+
+  set +e
+  run_clone_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "clone-scout: a scout's scratch clone should be torn down"$'\n'"$(cat "$case_dir/stderr")"
+  assert_absent "$case_dir/clones/task-x1" "clone-scout: teardown left the scout's clone behind"
+  pass "a scout's scratch task clone is removed"
 }
 
 test_no_mistakes_origin_remote_allows() {
@@ -4255,6 +4438,12 @@ test_teardown_closes_the_backlog_item_itself
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
+test_clone_pushed_work_is_removed_without_treehouse
+test_clone_unpushed_work_refuses_and_keeps_the_clone
+test_clone_local_only_merged_into_project_main_allows
+test_clone_local_only_unmerged_refuses
+test_clone_with_foreign_marker_refuses_even_forced
+test_clone_scout_is_removed
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed

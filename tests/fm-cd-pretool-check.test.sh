@@ -226,6 +226,29 @@ test_inert_in_child_worktree() {
   pass "cd-guard: inert in a crewmate/scout task worktree (linked git worktree)"
 }
 
+# A sandboxed Claude task's own clone (bin/fm-task-clone-lib.sh) is a plain
+# checkout like the primary, so the task-clone marker beside it is what keeps the
+# guard inert there; the same library installed in a real primary changes nothing.
+test_inert_in_task_clone() {
+  local base clone out rc
+  base=$(make_primary_fixture "$TMP_ROOT/clone-base")
+  mkdir -p "$TMP_ROOT/clone-home"
+  clone=$(FM_HOME="$TMP_ROOT/clone-home" FM_ROOT="$ROOT" FM_TASK_CLONE_ROOT="$TMP_ROOT/clones" \
+    bash -c '. "$1/bin/fm-task-clone-lib.sh" && fm_task_clone_create "$2" cd-guard-clone "$3"' _ \
+    "$ROOT" "$base" "$TMP_ROOT/clone-home") || fail "could not create the task clone fixture"
+  : > "$clone/AGENTS.md"
+  install_cd_scripts "$clone"
+  cp "$ROOT/bin/fm-task-clone-lib.sh" "$ROOT/bin/fm-path-lib.sh" "$clone/bin/"
+  out=$("$clone/bin/fm-cd-pretool-check.sh" --claude --command 'cd projects/foo' 2>&1); rc=$?
+  expect_code 0 "$rc" "cd-guard must be inert in a sandboxed task's own clone"
+  [ -z "$out" ] || fail "cd-guard produced output in a task clone: $out"
+  cp "$ROOT/bin/fm-task-clone-lib.sh" "$ROOT/bin/fm-path-lib.sh" "$base/bin/"
+  out=$("$base/bin/fm-cd-pretool-check.sh" --claude --command 'cd projects/foo' 2>&1); rc=$?
+  expect_code 2 "$rc" "cd-guard must still fire in a primary checkout carrying the task-clone library"
+  assert_contains "$out" '[persistent-cd]' "primary block must carry the reason code"
+  pass "cd-guard: inert in a sandboxed task's own clone, still firing in the primary"
+}
+
 test_inert_when_not_firstmate_repo() {
   local dir out rc
   dir="$TMP_ROOT/not-firstmate"
@@ -388,6 +411,7 @@ test_scripts_are_shellcheck_clean() {
 test_full_acceptance_matrix
 test_fires_in_secondmate_home
 test_inert_in_child_worktree
+test_inert_in_task_clone
 test_inert_when_not_firstmate_repo
 test_inert_when_not_a_git_repo
 test_e2e_cwd_leak_regression

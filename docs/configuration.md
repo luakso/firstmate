@@ -416,6 +416,7 @@ For spawn-capable adapters, the runtime session-provider backend controls where 
 | `cmux` | Experimental; no dedicated real-backend CI lane | [`docs/cmux-backend.md`](cmux-backend.md) |
 
 Treehouse remains the worktree provider for tmux, herdr, zellij, and cmux, since herdr, zellij, and cmux are session providers only; Orca provides both the task worktree and terminal endpoint.
+A sandboxed Claude ship or scout is the exception: it works in its own [task clone](#the-task-clone) instead of a Treehouse slot, and `backend=orca` refuses it.
 
 ### Backend selection order
 
@@ -847,15 +848,33 @@ With `on`, a Claude ship on a `forge=gerrit` project refuses at spawn and relaun
 So does a Claude ship or scout whose brief was scaffolded with `--herdr-lab`, because its worker must itself drive Herdr and tmux lab sessions through their Unix sockets, which the fence refuses.
 Run a Gerrit or Herdr-lab task with a non-Claude harness, or turn the sandbox off for it.
 Promotion keeps the scout's running process and is not refused, so a Claude scout launched inside the sandbox on a `forge=gerrit` project cannot publish after promotion: write `off` to `config/claude-sandbox` and relaunch the scout before promoting it.
+With `on`, a Claude ship or scout on `backend=orca` refuses at spawn, because Orca provides its own linked worktree, and a Claude relaunch of a task recorded in a linked worktree refuses too, such as one spawned before the sandbox was switched on (the task clone below explains why).
+Relaunch such a task with a non-Claude harness, or turn the sandbox off for it.
+
+### The task clone
+
+With `on`, a fresh Claude ship or scout does not take a Treehouse pool slot.
+`bin/fm-spawn.sh` gives it a clone of its own, made with `git clone --shared` from the project clone, and records `worktree_layout=clone` in `state/<id>.meta`.
+A linked worktree would not hold the fence: Claude Code's sandbox grants a linked worktree's shared `.git` along with the worktree, which would leave every branch ref, the object store, and other tasks' `worktrees/` entries of the project clone writable.
+The clone keeps its own `.git` inside its directory and reads the project clone's objects through `objects/info/alternates`, so it costs a checkout rather than a copy of history.
+
+- It lives at `~/.firstmate/clones/<home-tag>/<id>/<repo>`, where `<home-tag>` names this Firstmate home, outside every home so Claude Code never loads a home's own instructions as a parent `CLAUDE.md`; the `FM_TASK_CLONE_ROOT` environment variable replaces `~/.firstmate/clones/<home-tag>`.
+- It starts on a detached HEAD at the freshly fetched default branch with no local branches, so every branch in it is the worker's own.
+- Its `origin` and other remotes are the project clone's, except the no-mistakes gate, so a push reaches the forge and never the project clone.
+  It also carries the project clone's `user.*` identity, `core.hooksPath`, installed git hooks, and `info/exclude`; no other repository-local setting is carried.
+- `bin/fm-claude-trust.sh --task-clone` registers Claude's workspace trust on the clone itself, which Claude Code treats as its own project root.
+- A relaunch reuses the clone, sandboxed or not.
+- Local-only landing (`bin/fm-merge-local.sh`) fetches the branch from the clone into a temporary ref of the project clone, fast-forwards the default branch to it, and deletes that ref, so the project clone never gains a branch for it.
+- Cleanup runs the same landed-work checks as for a pool slot, then removes the whole `<id>` directory instead of returning a slot; a `.fm-task-clone` marker beside the clone, naming the task and its home, is what proves the directory is that task's to remove.
 
 ### What a sandboxed worker can and cannot do
 
 `bin/fm-spawn.sh`'s `claude_sandbox_settings` owns the exact settings; this is their effect on Linux (bubblewrap), where it was verified with Claude Code 2.1.283.
 
-- Writes succeed only in the worker's own worktree, the project clone's shared git data, Claude's private temp directory, and the task records the brief tells it to write: `state/<id>.status` (append), `state/<id>.inbox` with its `handled/` moves, `data/<id>`, the per-task temp root `/tmp/fm-<id>`, and the worker's own Go caches in `state/<id>.gocache`.
-  Because every worker runs in a linked worktree, Claude's sandbox also leaves the project clone's shared `.git` writable: every branch ref, the object store, and other tasks' `worktrees/` entries, with only its `hooks/` and `config` denied.
-  The fence therefore protects everything outside the project clone, but not the clone's shared git data, and not the repository git hooks an excluded `git push` fires (supported limits below).
-  Every other write fails with `Read-only file system`, including in the shared directories the launch grants for reading, `state/operational-inbox` and the code root's `.agents/skills`, which the sandbox's `denyWrite` keeps read-only because other tasks and unfenced sessions load them.
+- Writes succeed only in the worker's own task clone, its own git data included, Claude's private temp directory, and the task records the brief tells it to write: `state/<id>.status` (append), `state/<id>.inbox` with its `handled/` moves, `data/<id>`, the per-task temp root `/tmp/fm-<id>`, and the worker's own Go caches in `state/<id>.gocache`.
+  Inside the clone, Claude's sandbox keeps `.git/hooks` and `.git/config` read-only.
+  Every other write fails with `Read-only file system`: the project clone's git data, every other task's clone or worktree, and the shared directories the launch grants for reading, `state/operational-inbox` and the code root's `.agents/skills`, which the sandbox's `denyWrite` keeps read-only because other tasks and unfenced sessions load them.
+  `tests/fm-task-clone-sandbox-live-e2e.test.sh` proves those git-data writes fail against the real Claude Code sandbox.
 - Unix-socket connections fail with `Operation not permitted`, so the worker cannot reach Herdr, tmux, Docker, or desktop services behind D-Bus.
 - Network egress is limited to the Go module proxy and checksum database, and any other host is refused rather than prompted, so an unattended pane never parks on a network question.
 - `GOTMPDIR` lives in the per-task temp root, and `GOCACHE` and `GOMODCACHE` in the task's own disk-backed `state/<id>.gocache` (`build/` and `mod/`), so Go builds work inside the fence without filling a memory-backed `/tmp`; each sandboxed task starts with cold caches, and cleanup removes both, read-only module trees included.
@@ -871,6 +890,11 @@ Supported limits:
 
 - The fence covers Bash commands only; auto mode's classifier reviews Claude's built-in file tools instead.
 - Repository git hooks still run outside the fence when an excluded `git push` fires them: a `pre-push` hook, such as `.husky/pre-push` under a project's `core.hooksPath`, is worktree code the worker can edit inside the fence, and auto mode's classifier sees only the push command.
+- An excluded `git push` can write any repository git can push to, a local path included; only auto mode's classifier stands between it and the project clone, whose path the clone's remotes never name.
+- No-mistakes keys a repository by its path, so a task clone is a repository of its own to it: a sandboxed no-mistakes ship runs `no-mistakes init` in its clone, as its brief says, its first pipeline push carries the project's history into a gate of its own, and that gate and its run records stay in `~/.no-mistakes` after cleanup.
+- A task clone sees only its own fetches, and the fence refuses those, so the worker's remote-tracking refs stay as they were at spawn; a fetch in the project clone no longer refreshes them.
+- A pool slot's preparation does not apply to a task clone: Treehouse's `.worktreeinclude` seeding of ignored files and any build output a reused slot kept are absent, and submodules start uninitialized.
+- The project clone's objects a task clone borrows stay valid while the project clone keeps them reachable, which its fast-forward-only default branch does; a remote-tracking ref the project clone has since pruned can lose its objects to the project clone's garbage collection, by default two weeks later, so a task clone kept open that long can find such a ref broken.
 - For a project that commits a `.claude/settings.json`, a sandboxed worker loads neither the project's `.claude/skills` nor its `.claude/agents`, and gets its `CLAUDE.md` and rules only by reading them as its system prompt instructs.
 - Skipping that file also drops the rules in it that narrow access: `permissions.deny` (so its `Read` and `Edit` denies no longer bind Claude's file tools or become sandbox read and write denies), `sandbox.filesystem` `denyRead` and `denyWrite`, `sandbox.credentials` deny entries, and `sandbox.network.deniedDomains`.
   A sandboxed worker on such a project can therefore read or use what the same worker unsandboxed could not.
@@ -879,9 +903,9 @@ Supported limits:
 - The status command's optional fleet-ledger append cannot write inside the fence and is skipped; the watcher's per-poll capture records the same status line.
   Any Firstmate lock a sandboxed command tries to take in a directory it cannot write fails at once with an error instead of waiting forever.
 - Anything else that needs a socket, the keyring, or another host, such as `git fetch`, browser automation, Lavish, or a tmux-driven test suite, fails inside the fence and is left to the no-mistakes pipeline or to Firstmate; a Gerrit ship and a `--herdr-lab` ship or scout are refused at spawn instead (above).
-- Claude's protected paths (`.claude/skills` and the other `.claude/*` entries, `.mcp.json`, `.vscode`, and `.idea`) are read-only to sandboxed Bash even inside the worktree; in a firstmate worktree that covers `.agents/skills` through the tracked `.claude/skills` symlink.
+- Claude's protected paths (`.claude/skills` and the other `.claude/*` entries, `.mcp.json`, `.vscode`, and `.idea`) are read-only to sandboxed Bash even inside the task clone; in a firstmate clone that covers `.agents/skills` through the tracked `.claude/skills` symlink.
   Edits there go through Claude's Edit tool, and git operations that rewrite those files, such as a rebase, checkout, or reset across a changed skill, are left to the no-mistakes pipeline or to Firstmate.
-- Inside the fence, the sandbox's protective placeholders for absent dotfiles (such as `.bashrc` or `.gitconfig`) appear in the worktree, so `git add -A` refuses them; a sandboxed worker stages explicit paths instead.
+- Inside the fence, the sandbox's protective placeholders for absent dotfiles (such as `.bashrc` or `.gitconfig`) appear in the task clone, so `git add -A` refuses them; a sandboxed worker stages explicit paths instead.
 
 ### When changes apply and inheritance
 
@@ -2420,6 +2444,7 @@ FM_WATCH_TRIAGE_LOG_MAX_BYTES=262144   # size cap for the watcher's absorbed-wak
 FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT=     # optional seconds allowed for bootstrap's best-effort clone refresh; unset/blank defaults to max(20, 5 + 3 * origin-backed-project-count)
 FM_FLEET_PRUNE=1        # set to 0 to skip pruning local branches whose upstream is gone
 FM_STALE_WORKTREE_LOCK_AGE_SECS=30       # min mtime age before fm-teardown.sh treats a leftover worktree git index.lock as provably stale
+FM_TASK_CLONE_ROOT=     # optional absolute directory holding sandboxed Claude tasks' own clones as <id>/<repo>; unset uses ~/.firstmate/clones/<home-tag> ("The task clone" above)
 FM_TREEHOUSE_RETURN_LOCK_RETRIES=3        # retries after a treehouse return fails on the transient git index.lock signature
 FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS=1 # seconds fm-teardown.sh waits before each retry after that signature
 FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=   # legacy alias for FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS when the new variable is unset
