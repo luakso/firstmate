@@ -241,7 +241,9 @@ now_iso() {
 # and unlike comparing top-level paths it still holds when the primary is
 # reached through a different path. When git resolves neither directory - a
 # non-repository fixture, a detached copy - nothing proves this is the primary,
-# so the run proceeds.
+# so the run proceeds. A sandboxed task's own clone (bin/fm-task-clone-lib.sh)
+# is a standalone repository too, but it is the assigned task copy, not the
+# primary, so its task-clone shape lets the run proceed.
 refuse_primary_checkout_for_task() {
   local task_id git_dir common_dir top
   task_id=${FM_TASK_ID:-}
@@ -252,6 +254,10 @@ refuse_primary_checkout_for_task() {
     && common_dir=$(cd "$common_dir" 2>/dev/null && pwd -P) || common_dir=
   [ -n "$git_dir" ] && [ -n "$common_dir" ] || return 0
   [ "$git_dir" = "$common_dir" ] || return 0
+  if [ -f "$ROOT/bin/fm-task-clone-lib.sh" ] && [ -f "$ROOT/bin/fm-path-lib.sh" ]; then
+    # shellcheck source=bin/fm-task-clone-lib.sh
+    . "$ROOT/bin/fm-task-clone-lib.sh" && ! fm_task_clone_shaped "$ROOT" || return 0
+  fi
   top=$(cd "$ROOT" && pwd -P)
   die "refusing to run in the repository primary checkout $top while FM_TASK_ID=$task_id is set; run from the assigned task worktree instead"
 }
@@ -371,7 +377,8 @@ family_for_basename() {
     fm-send-inbox-doorbell-live-e2e.test.sh|\
     fm-calm-claude-mod-plugin.test.sh|fm-calm-claude-mod-live-e2e.test.sh|\
     fm-calm-pi-queue-retention-live-e2e.test.sh|\
-    fm-herdr-submit-confirm-live-e2e.test.sh)
+    fm-herdr-submit-confirm-live-e2e.test.sh|\
+    fm-task-clone-sandbox-live-e2e.test.sh)
       printf '%s\n' live-harness-optin
       ;;
     fm-backend-herdr.test.sh|fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|\

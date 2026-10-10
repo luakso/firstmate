@@ -141,6 +141,29 @@ test_standalone_local_only_needs_project_ref() {
   pass "standalone local-only done: requires the named head in the project clone"
 }
 
+# A sandboxed task's own clone (bin/fm-task-clone-lib.sh) keeps its branch until
+# fm-merge-local.sh imports it, so its own named branch stands in for the
+# project's; a detached head on no branch, even there, is still refused.
+test_task_clone_local_only_branch_is_accepted() {
+  local repo clone rc
+  repo="$TMP_ROOT/clone-project"
+  fm_git_init_commit "$repo"
+  mkdir -p "$TMP_ROOT/clone-home"
+  clone=$(FM_HOME="$TMP_ROOT/clone-home" FM_ROOT="$ROOT" FM_TASK_CLONE_ROOT="$TMP_ROOT/clones" \
+    bash -c '. "$1/bin/fm-task-clone-lib.sh" && fm_task_clone_create "$2" tc-local "$3"' _ \
+    "$ROOT" "$repo" "$TMP_ROOT/clone-home") || fail "could not create the task clone"
+  git -C "$clone" checkout -q -b fm/tc-local
+  git -C "$clone" commit -q --allow-empty -m 'only in the task clone'
+  accept_done ship local-only "$clone" "$repo" "done: ready in branch fm/tc-local" \
+    || fail "a local-only named branch in a task clone was refused"
+  git -C "$clone" checkout -q --detach HEAD
+  git -C "$clone" commit -q --allow-empty -m 'detached in the task clone'
+  rc=0
+  accept_done ship local-only "$clone" "$repo" "done: ready in branch fm/tc-local" >/dev/null || rc=$?
+  [ "$rc" -eq 1 ] || fail "a detached local-only head in a task clone was accepted"
+  pass "local-only done: in a task clone accepts its named branch and refuses a detached head"
+}
+
 test_free_text_sha_is_not_the_named_head() {
   local repo wt old new reason rc
   repo="$TMP_ROOT/hex-repo"
@@ -397,6 +420,7 @@ test_keyed_and_spaced_done_lines_are_gated
 test_local_only_linked_branch_is_accepted
 test_local_only_detached_head_is_refused
 test_standalone_local_only_needs_project_ref
+test_task_clone_local_only_branch_is_accepted
 test_non_done_lines_are_not_gated
 test_fenced_and_indented_captain_lines_are_not_intent
 test_pr_based_dod_draft_check_uses_gh_axi

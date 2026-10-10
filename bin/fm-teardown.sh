@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tear down a finished task: return the treehouse worktree, release the Orca
-# worktree, or retire a secondmate home; kill the recorded runtime endpoint,
+# worktree, remove a sandboxed task's clone, or retire a secondmate home; kill
+# the recorded runtime endpoint,
 # clear volatile state, and transition this home's backlog item for ship and
 # scout tasks before reporting success (a secondmate teardown transitions none,
 # since secondmates are not backlog items), then refresh/prune the project's
@@ -90,6 +91,12 @@
 # name a live quarantined space and is retained for that sweep.
 # data/<id>/ is deliberately left in place: a successor spawn reads brief.md
 # from it.
+# A task clone (state/<id>.meta worktree_layout=clone, written by bin/fm-spawn.sh
+# for a sandboxed Claude ship or scout) runs the same landed-work gates; its
+# local-only comparison reads the project's local default by commit, since the
+# clone has no such branch of its own. It is proved this task's by the marker
+# bin/fm-task-clone-lib.sh owns, refused before anything runs when that proof
+# fails, and removed whole instead of returned to a pool.
 # Worktree-slot ownership (teardown-slot-collision): a treehouse pool slot is
 # reused across tasks, so a stale, duplicated, or drifted worktree= record can
 # name a slot a DIFFERENT live task now holds. Cleanup kills every process under
@@ -340,7 +347,8 @@ for _teardown_source in \
   fm-nm-run-lib.sh \
   fm-wake-lib.sh \
   fm-path-lib.sh \
-  fm-lease-lib.sh
+  fm-lease-lib.sh \
+  fm-task-clone-lib.sh
 do
   teardown_require_source "$SCRIPT_DIR/$_teardown_source"
 done
@@ -371,6 +379,8 @@ unset _teardown_source
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-task-clone-lib.sh
+. "$SCRIPT_DIR/fm-task-clone-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -1154,6 +1164,13 @@ elif [ "$TREEHOUSE_SLOT_LOCK_REQUIRED" = 1 ]; then
 fi
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
+# A sandboxed Claude ship or scout works in its own task clone rather than a
+# pool slot (bin/fm-task-clone-lib.sh); fm-spawn records that layout.
+TASK_CLONE=0
+if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ] &&
+  [ "$(fm_meta_get "$META" worktree_layout)" = clone ]; then
+  TASK_CLONE=1
+fi
 
 # A record accepted as a legacy incarnation (no spawn_gen, and either
 # --legacy-record given or the record is windowless) may be torn down only
@@ -1862,7 +1879,7 @@ teardown_treehouse_return() {
 }
 
 validate_worktree_teardown_safety() {
-  local dirty_raw dirty unpushed_raw unpushed DEFAULT unmerged_raw unmerged branch
+  local dirty_raw dirty unpushed_raw unpushed DEFAULT DEFAULT_TIP unmerged_raw unmerged branch
   [ -d "$WT" ] || return 0
   [ "$FORCE" != "--force" ] || return 0
   case "$KIND" in
@@ -1891,7 +1908,14 @@ validate_worktree_teardown_safety() {
 
   if [ -n "$unpushed" ] && [ "$MODE" = local-only ]; then
     DEFAULT=$(default_branch) || { echo "REFUSED: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master." >&2; return 1; }
-    if ! unmerged_raw=$(git -C "$WT" log --oneline HEAD --not "$DEFAULT" -- 2>/dev/null); then
+    # The project's own local default is what bin/fm-merge-local.sh advances.
+    # A linked worktree shares that ref; a task clone reads its commits through
+    # its alternates but has no such branch of its own, so compare by commit.
+    DEFAULT_TIP=$(git -C "$PROJ" rev-parse --verify --quiet "refs/heads/$DEFAULT^{commit}" 2>/dev/null) || {
+      echo "REFUSED: cannot resolve local $DEFAULT in $PROJ." >&2
+      return 1
+    }
+    if ! unmerged_raw=$(git -C "$WT" log --oneline HEAD --not "$DEFAULT_TIP" -- 2>/dev/null); then
       if worktree_safety_blocked_by_lock "commits not on $DEFAULT"; then
         return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"
       fi
@@ -2453,6 +2477,18 @@ teardown_owns_worktree() {
   [ "$TEARDOWN_SLOT_REASSIGNED" != 1 ]
 }
 
+# A task clone is never shared or reassigned, so its ownership proof is the
+# marker fm-spawn wrote beside it (bin/fm-task-clone-lib.sh) rather than a pool
+# claim. A recorded clone that does not carry this task's and this home's marker
+# is refused before anything is killed, inspected, or removed.
+require_owned_task_clone() {
+  [ "$TASK_CLONE" = 1 ] && [ -n "$WT" ] && [ -e "$WT" ] || return 0
+  fm_task_clone_owned "$WT" "$ID" "$FM_HOME" && return 0
+  echo "REFUSED: task $ID's recorded worktree $WT is not the task clone this home made for it (no $FM_TASK_CLONE_MARKER naming $ID and this home beside it, or not a standalone repository); nothing was changed - not even with --force." >&2
+  echo "Reconcile the record (bin/fm-crew-state.sh $ID) or inspect that directory, then re-run teardown." >&2
+  return 1
+}
+
 firstmate_home_has_treehouse_slot() {
   local home=$1
   worktree_registered_for_project "$FM_ROOT" "$home"
@@ -3009,6 +3045,11 @@ validate_firstmate_home_children_removal() {
         validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
         require_orca_worktree_path_match "$child_orca_worktree_id" "$child_wt" || return 1
       fi
+    elif [ "$(meta_value "$child_meta" worktree_layout)" = clone ]; then
+      if [ -n "$child_wt" ] && [ -e "$child_wt" ] && ! fm_task_clone_owned "$child_wt" "$child_id" "$home"; then
+        echo "REFUSED: unsafe child task clone removal target $child_wt is not the task clone $home made for $child_id" >&2
+        return 1
+      fi
     elif [ -n "$child_wt" ] && [ -e "$child_wt" ]; then
       child_proj=$(meta_value "$child_meta" project)
       validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
@@ -3251,6 +3292,10 @@ cleanup_firstmate_home_children() {
           "$child_wt/.fm-grok-turnend" "$child_wt/.fm-kimi-turnend"
       fi
       fm_backend_remove_worktree "$child_backend" "$child_orca_worktree_id" || return 1
+    elif [ "$(meta_value "$child_meta" worktree_layout)" = clone ]; then
+      if [ -n "$child_wt" ] && [ -e "$child_wt" ]; then
+        fm_task_clone_remove "$child_wt" "$child_id" "$home" || return 1
+      fi
     elif [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
       # The same ownership determination as the parent's own slot: a child
       # slot reassigned to another task is not this child's to kill, reset,
@@ -3326,6 +3371,7 @@ remove_secondmate_registry_entry() {
 
 require_exclusive_task_worktree_slot || exit 1
 require_owned_task_worktree_slot || exit 1
+require_owned_task_clone || exit 1
 
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
 
@@ -3585,6 +3631,29 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   fm_backend_remove_worktree "$BACKEND" "$ORCA_WORKTREE_ID"
 elif [ "$KIND" != secondmate ] && ! teardown_owns_worktree; then
   :
+elif [ "$TASK_CLONE" = 1 ]; then
+  # A task clone goes back to no pool: its whole task directory is removed once
+  # the landed-work check passes again after the task's processes were reaped,
+  # exactly where a pool slot's return re-checks it.
+  if [ -e "$WT" ]; then
+    if [ "$FORCE" != "--force" ] && [ "$KIND" != scout ]; then
+      if validate_worktree_teardown_safety; then
+        :
+      else
+        safety_rc=$?
+        if [ "$safety_rc" -eq "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED" ]; then
+          cleanup_stale_lock_for_safety_check "$WT" || exit 1
+          validate_worktree_teardown_safety || exit 1
+        else
+          exit 1
+        fi
+      fi
+    fi
+    fm_task_clone_remove "$WT" "$ID" "$FM_HOME" || {
+      echo "error: could not remove task clone $WT; teardown aborted" >&2
+      exit 1
+    }
+  fi
 elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   if [ "$branch" != "HEAD" ]; then

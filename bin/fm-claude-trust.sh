@@ -9,10 +9,13 @@
 # on rather than answered on the human's behalf.
 #
 # Usage: fm-claude-trust.sh <worktree> <project>
+#        fm-claude-trust.sh --task-clone <clone> <project>
 #        fm-claude-trust.sh --secondmate-home <home> <id>
 #        fm-claude-trust.sh --lab-home <home>
 #   <worktree>  the isolated task worktree this spawn launches into
-#   <project>   the primary checkout that worktree belongs to
+#   <clone>     the task clone a sandboxed Claude spawn launches into
+#               (bin/fm-task-clone-lib.sh)
+#   <project>   the primary checkout that worktree or clone belongs to
 #   <home>      the seeded secondmate home this spawn launches into
 #   <id>        the secondmate id that home must already be marked for
 #   --lab-home  the disposable lab home bin/fm-live-lab.sh launches a lab
@@ -120,6 +123,19 @@
 # opt-in guard family (FM_*_LIVE_E2E=1) and record the result in
 # docs/verification/runtime-backends.md, rather than assuming the shape here.
 #
+# TASK-CLONE MODE. A sandboxed Claude ship or scout launches in its own clone
+# of the project rather than a linked worktree (bin/fm-task-clone-lib.sh), and
+# the worktree test above refuses that clone as a primary checkout. The
+# evidence is again structural: <clone> must be the top level of a standalone
+# repository whose git directory is its own .git, cut from <project> - its
+# objects/info/alternates names <project>'s object store - and its parent must
+# hold the task-clone marker as a regular file this user owns. Claude Code's
+# git-root canonicalization stops at such a clone, so the clone is its own
+# canonical project entry: trust lands there, and the consent-gated
+# external-imports flags are carried onto it from <project>'s canonical entry
+# under exactly the worktree-mode rule below. <project>'s own entry is read for
+# that consent and never written.
+#
 # SECONDMATE-HOME MODE. A secondmate home is a whole firstmate instance rather
 # than a task worktree, and bin/fm-home-seed.sh produces it in two shapes: a
 # leased treehouse worktree (linked) and a standalone clone of the firstmate
@@ -161,9 +177,9 @@
 # projects entries for the worktree path and the resolved canonical project
 # path in ${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json, which must be a regular
 # file this uid owns; every unrelated key and project entry is preserved, and
-# both entries land in one atomic replacement. In secondmate-home and lab-home
-# mode: the single projects entry for the registered home path, same store,
-# same atomic replacement. fm-spawn.sh forwards CLAUDE_CONFIG_DIR onto the
+# both entries land in one atomic replacement. In task-clone, secondmate-home,
+# and lab-home mode: the single projects entry for the registered clone or home
+# path, same store, same atomic replacement. fm-spawn.sh forwards CLAUDE_CONFIG_DIR onto the
 # claude launch verbatim rather than resolving it, and the pane starts in the
 # registered directory, so only an absolute value names the same store on both sides; a
 # relative one is refused below rather than guessed at.
@@ -186,6 +202,7 @@ unset CDPATH \
 
 usage() {
   echo "usage: fm-claude-trust.sh <worktree> <project>" >&2
+  echo "       fm-claude-trust.sh --task-clone <clone> <project>" >&2
   echo "       fm-claude-trust.sh --secondmate-home <home> <id>" >&2
   echo "       fm-claude-trust.sh --lab-home <home>" >&2
   exit 2
@@ -195,6 +212,14 @@ usage() {
 # names what the argument was expected to be so every shared refusal below reads
 # correctly in both modes.
 case "${1:-}" in
+  --task-clone)
+    [ "$#" -eq 3 ] || usage
+    MODE=task-clone
+    TARGET_ARG=$2
+    SUB_ID=
+    PROJ_ARG=$3
+    SCOPE_NOUN="task clone"
+    ;;
   --secondmate-home)
     [ "$#" -eq 3 ] || usage
     MODE=secondmate-home
@@ -228,6 +253,8 @@ refuse() { echo "error: refusing to pre-register Claude trust: $1" >&2; exit 1; 
 
 # shellcheck source=bin/fm-gate-refuse-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/fm-gate-refuse-lib.sh"
+# shellcheck source=bin/fm-task-clone-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/fm-task-clone-lib.sh"
 
 real_dir() { (cd -P -- "$1" 2>/dev/null && pwd -P); }
 
@@ -246,7 +273,7 @@ common_dir_of() {
 
 TARGET_REAL=$(real_dir "$TARGET_ARG") || true
 [ -n "$TARGET_REAL" ] || refuse "$SCOPE_NOUN '$TARGET_ARG' is not an accessible directory"
-if [ "$MODE" = worktree ]; then
+if [ "$MODE" = worktree ] || [ "$MODE" = task-clone ]; then
   PROJ_REAL=$(real_dir "$PROJ_ARG") || true
   [ -n "$PROJ_REAL" ] || refuse "project '$PROJ_ARG' is not an accessible directory"
 fi
@@ -282,7 +309,7 @@ if [ -n "${HOME:-}" ]; then
   [ "$TARGET_REAL" != "${HOME_REAL:-}" ] || refuse "'$TARGET_REAL' is the home directory, not a $SCOPE_NOUN"
 fi
 
-if [ "$MODE" = worktree ]; then
+if [ "$MODE" = worktree ] || [ "$MODE" = task-clone ]; then
   WT_TOP=$(git -C "$TARGET_REAL" rev-parse --show-toplevel 2>/dev/null) || true
   [ -n "$WT_TOP" ] || refuse "'$TARGET_REAL' is not inside a git repository"
   WT_TOP_REAL=$(real_dir "$WT_TOP") || true
@@ -294,11 +321,36 @@ if [ "$MODE" = worktree ]; then
   [ -n "$WT_GIT_DIR" ] || refuse "'$TARGET_REAL' has an unresolvable git directory"
   WT_COMMON=$(common_dir_of "$TARGET_REAL") || true
   [ -n "$WT_COMMON" ] || refuse "'$TARGET_REAL' has no resolvable git common directory"
-  [ "$WT_GIT_DIR" != "$WT_COMMON" ] || refuse "'$TARGET_REAL' is a primary checkout, not an isolated worktree"
+  if [ "$MODE" = worktree ]; then
+    [ "$WT_GIT_DIR" != "$WT_COMMON" ] || refuse "'$TARGET_REAL' is a primary checkout, not an isolated worktree"
+  else
+    [ "$WT_GIT_DIR" = "$WT_COMMON" ] && [ "$WT_GIT_DIR" = "$TARGET_REAL/.git" ] \
+      || refuse "'$TARGET_REAL' is not a standalone clone whose git directory is its own .git"
+  fi
 
   PROJ_COMMON=$(common_dir_of "$PROJ_REAL") || true
   [ -n "$PROJ_COMMON" ] || refuse "project '$PROJ_REAL' is not inside a git repository"
-  [ "$WT_COMMON" = "$PROJ_COMMON" ] || refuse "'$TARGET_REAL' is not a worktree of project '$PROJ_REAL'"
+  if [ "$MODE" = worktree ]; then
+    [ "$WT_COMMON" = "$PROJ_COMMON" ] || refuse "'$TARGET_REAL' is not a worktree of project '$PROJ_REAL'"
+  else
+    [ "$WT_COMMON" != "$PROJ_COMMON" ] || refuse "'$TARGET_REAL' is project '$PROJ_REAL' itself, not a task clone of it"
+    CLONE_MARKER="$(dirname -- "$TARGET_REAL")/$FM_TASK_CLONE_MARKER"
+    [ -f "$CLONE_MARKER" ] && [ ! -L "$CLONE_MARKER" ] && [ -O "$CLONE_MARKER" ] \
+      || refuse "'$TARGET_REAL' has no task-clone marker owned by this user beside it, so it is not a task clone"
+    ALTERNATES="$WT_GIT_DIR/objects/info/alternates"
+    PROJ_OBJECTS=$(real_dir "$PROJ_COMMON/objects") || true
+    CLONE_OF_PROJECT=0
+    if [ -n "$PROJ_OBJECTS" ] && [ -f "$ALTERNATES" ] && [ ! -L "$ALTERNATES" ]; then
+      while IFS= read -r alternate || [ -n "$alternate" ]; do
+        case $alternate in
+          /*) ;;
+          *) alternate="$WT_GIT_DIR/objects/$alternate" ;;
+        esac
+        [ "$(real_dir "$alternate")" != "$PROJ_OBJECTS" ] || CLONE_OF_PROJECT=1
+      done <"$ALTERNATES"
+    fi
+    [ "$CLONE_OF_PROJECT" = 1 ] || refuse "'$TARGET_REAL' does not borrow the object store of project '$PROJ_REAL', so it is not a task clone of it"
+  fi
 
   # The external-imports flags must land on the primary checkout - its own git
   # dir equals the common dir - because that is exactly the path Claude Code's
@@ -454,7 +506,7 @@ fi
 # consent the human was never asked for.
 TRUST_FLAG='hasTrustDialogAccepted'
 IMPORT_FLAGS='["hasClaudeMdExternalIncludesApproved","hasClaudeMdExternalIncludesWarningShown"]'
-if [ "$MODE" = worktree ]; then
+if [ "$MODE" = worktree ] || [ "$MODE" = task-clone ]; then
   WRITE_ARGS=("$STORE" "$MODE" "$TARGET_REAL" "$PROJ_CANON" "$TRUST_FLAG" "$IMPORT_FLAGS")
 else
   WRITE_ARGS=("$STORE" "$MODE" "$TARGET_REAL" "" "$TRUST_FLAG" "$IMPORT_FLAGS")
@@ -535,6 +587,17 @@ const attempt = () => {
     setFlags(projects, target, targetFlags);
     setFlags(projects, project, projectFlags);
     keys = [[target, targetFlags], [project, projectFlags]];
+  } else if (mode === "task-clone") {
+    // The clone is its own canonical root, so its entry is the one both checks
+    // read; the project's entry only supplies the human's standing decision.
+    if (declinedExternalImports(projects, project)) {
+      throw new Error(
+        `project entry for ${project} in ${store} already declined external CLAUDE.md imports; refusing to carry anything else onto its task clone. To recover, remove hasClaudeMdExternalIncludesApproved and hasClaudeMdExternalIncludesWarningShown from that project entry and approve the imports dialog interactively once`,
+      );
+    }
+    const targetFlags = approvedExternalImports(projects, project) ? [trustFlag, ...importFlags] : [trustFlag];
+    setFlags(projects, target, targetFlags);
+    keys = [[target, targetFlags]];
   } else {
     setFlags(projects, target, [trustFlag]);
     keys = [[target, [trustFlag]]];
@@ -582,6 +645,8 @@ NODE
 then
   if [ "$MODE" = worktree ]; then
     refuse "could not record trust for '$TARGET_REAL' and project '$PROJ_CANON' in '$STORE'"
+  elif [ "$MODE" = task-clone ]; then
+    refuse "could not record trust for task clone '$TARGET_REAL' of project '$PROJ_CANON' in '$STORE'"
   else
     refuse "could not record trust for '$TARGET_REAL' in '$STORE'"
   fi

@@ -145,19 +145,25 @@ FM_ROOT=${FM_ROOT_OVERRIDE:-$(CDPATH='' cd -- "$SCRIPT_DIR/.." 2>/dev/null && pw
 
 # Scope to a plain, non-worktree firstmate checkout, where git-dir equals
 # git-common-dir. A crewmate/scout task worktree - the shape bin/fm-spawn.sh
-# always hands out - is a linked git worktree where the two differ. This guard
+# hands out outside the Claude sandbox - is a linked git worktree where the two
+# differ. This guard
 # does not inspect .fm-secondmate-home, so it applies in a git-cloned secondmate
 # home but remains inert when the secondmate home is itself a treehouse-leased
-# linked worktree. docs/cd-guard.md owns this scope; docs/turnend-guard.md owns
-# the turn-end guard's separate marker-aware scope. Any failure to confirm the
-# checkout is inert (exit 0), never a block, so a broken environment never
-# denies a shell command.
+# linked worktree. A sandboxed task's own clone (bin/fm-task-clone-lib.sh) is a
+# plain checkout too, and is inert by its task-clone shape. docs/cd-guard.md
+# owns this scope; docs/turnend-guard.md owns the turn-end guard's separate
+# marker-aware scope. Any failure to confirm the checkout is inert (exit 0),
+# never a block, so a broken environment never denies a shell command.
 [ -f "$FM_ROOT/AGENTS.md" ] || exit 0
 [ -d "$FM_ROOT/bin" ] || exit 0
 command -v git >/dev/null 2>&1 || exit 0
 GIT_DIR=$(git -C "$FM_ROOT" rev-parse --git-dir 2>/dev/null) || exit 0
 GIT_COMMON_DIR=$(git -C "$FM_ROOT" rev-parse --git-common-dir 2>/dev/null) || exit 0
 [ "$GIT_DIR" = "$GIT_COMMON_DIR" ] || exit 0
+if [ -f "$SCRIPT_DIR/fm-task-clone-lib.sh" ] && [ -f "$SCRIPT_DIR/fm-path-lib.sh" ]; then
+  # shellcheck source=bin/fm-task-clone-lib.sh
+  . "$SCRIPT_DIR/fm-task-clone-lib.sh" && ! fm_task_clone_shaped "$FM_ROOT" || exit 0
+fi
 
 POLICY="$FM_ROOT/bin/fm-cd-command-policy.mjs"
 command -v node >/dev/null 2>&1 || exit 0

@@ -800,6 +800,82 @@ test_secondmate_home_trust_refuses_everything_unseeded() {
 
 # A secondmate home is not a linked worktree, so worktree mode must keep
 # refusing it rather than quietly widening to cover the new case.
+# make_task_clone <case-dir> <project> <id>: the production task clone of
+# <project> for task <id>, under <case-dir>/clones for a home at <case-dir>/home.
+make_task_clone() {
+  mkdir -p "$1/home"
+  FM_HOME="$1/home" FM_ROOT="$ROOT" FM_TASK_CLONE_ROOT="$1/clones" \
+    bash -c '. "$1/bin/fm-task-clone-lib.sh" && fm_task_clone_create "$2" "$3" "$4"' _ \
+    "$ROOT" "$2" "$3" "$1/home"
+}
+
+run_clone_trust() {  # <config> <clone> <project>
+  CLAUDE_CONFIG_DIR="$1" HOME="$1" "$TRUST" --task-clone "$2" "$3" 2>&1
+}
+
+# A sandboxed Claude task launches in its own clone (bin/fm-task-clone-lib.sh),
+# which Claude Code treats as its own project root: trust lands on the clone's
+# entry alone, the project's standing import consent is carried onto it, a
+# declined consent refuses, and the project's own entry is never written.
+test_task_clone_is_trusted_as_its_own_root() {
+  local rec store clone out before after
+  rec=$(make_case task-clone)
+  read_case "$rec"
+  store="$CONFIG/.claude.json"
+  clone=$(make_task_clone "$CASE_DIR" "$PROJ" tc1) || fail "could not create the task clone"
+  out=$(run_clone_trust "$CONFIG" "$clone" "$PROJ") || fail "a task clone was not trusted: $out"
+  assert_trusted "$store" "$clone" "the task clone's own entry was not trusted"
+  assert_trust_only_no_import_consent "$store" "$clone" "a task clone gained import consent the project never gave"
+  assert_store_value "$store" "undefined" "the project's own entry was written for a task clone" projects "$PROJ"
+
+  cat > "$store" <<JSON
+{"projects":{"$PROJ":{"hasClaudeMdExternalIncludesApproved":true,"hasClaudeMdExternalIncludesWarningShown":true}}}
+JSON
+  run_clone_trust "$CONFIG" "$clone" "$PROJ" >/dev/null || fail "a task clone of a consenting project was not trusted"
+  assert_all_flags "$store" "$clone" "the task clone did not carry the project's standing import consent"
+
+  cat > "$store" <<JSON
+{"projects":{"$PROJ":{"hasClaudeMdExternalIncludesApproved":false,"hasClaudeMdExternalIncludesWarningShown":true}}}
+JSON
+  before=$(cat "$store")
+  out=$(run_clone_trust "$CONFIG" "$clone" "$PROJ")
+  expect_code 1 $? "a task clone of a project that declined external imports must be refused: $out"
+  assert_contains "$out" "declined external CLAUDE.md imports" "the refusal did not name the declined consent"
+  after=$(cat "$store")
+  [ "$before" = "$after" ] || fail "the store was modified despite the refusal"
+  pass "fm-claude-trust.sh: a task clone is trusted as its own project root under the project's consent"
+}
+
+# Only a task clone cut from <project> qualifies: a linked worktree, the
+# project itself, a clone of another project, and a clone without its marker
+# are each refused.
+test_task_clone_mode_refuses_everything_else() {
+  local rec store clone other other_clone out
+  rec=$(make_case task-clone-refusals)
+  read_case "$rec"
+  store="$CONFIG/.claude.json"
+  clone=$(make_task_clone "$CASE_DIR" "$PROJ" tc2) || fail "could not create the task clone"
+  out=$(run_clone_trust "$CONFIG" "$WT" "$PROJ")
+  expect_code 1 $? "a linked worktree must be refused in task-clone mode: $out"
+  assert_contains "$out" "is not a standalone clone" "the linked-worktree refusal did not name the shape"
+  out=$(run_clone_trust "$CONFIG" "$PROJ" "$PROJ")
+  expect_code 1 $? "the project itself must be refused in task-clone mode: $out"
+  other="$CASE_DIR/other"
+  fm_git_init_commit "$other"
+  out=$(run_clone_trust "$CONFIG" "$clone" "$other")
+  expect_code 1 $? "a clone of another project must be refused: $out"
+  assert_contains "$out" "does not borrow the object store of project" "the foreign-project refusal did not name the tie"
+  other_clone="$CASE_DIR/plain-clone"
+  git clone -q --shared "$PROJ" "$other_clone"
+  out=$(run_clone_trust "$CONFIG" "$other_clone" "$PROJ")
+  expect_code 1 $? "a clone without the task-clone marker must be refused: $out"
+  assert_contains "$out" "no task-clone marker" "the markerless refusal did not name the marker"
+  assert_not_trusted "$store" "$WT" "a refused linked worktree was trusted"
+  assert_not_trusted "$store" "$other_clone" "a refused markerless clone was trusted"
+  assert_not_trusted "$store" "$clone" "a clone refused against another project was trusted"
+  pass "fm-claude-trust.sh: task-clone mode refuses anything but a task clone of the project"
+}
+
 test_worktree_mode_still_refuses_a_secondmate_home() {
   local case_dir config home out
   case_dir="$TMP_ROOT/sm-wrong-mode"
@@ -867,4 +943,6 @@ test_secondmate_standalone_clone_home_is_trusted
 test_secondmate_leased_worktree_home_is_trusted
 test_secondmate_home_trust_refuses_everything_unseeded
 test_worktree_mode_still_refuses_a_secondmate_home
+test_task_clone_is_trusted_as_its_own_root
+test_task_clone_mode_refuses_everything_else
 test_secondmate_spawn_fails_closed_when_home_trust_cannot_be_recorded

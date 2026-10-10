@@ -489,6 +489,69 @@ EOF
   pass "fm-merge-local: a registry change cannot redirect an in-flight local-only task"
 }
 
+# A sandboxed task's branch lives only in its own task clone
+# (bin/fm-task-clone-lib.sh), so the local merge reads it there, imports it
+# through a temporary ref only after its checks, fast-forwards the project's
+# default branch, and leaves the project clone no branch or ref for it. A clone
+# the task does not own, or a branch that no longer fast-forwards, refuses
+# without touching the project clone.
+test_local_merge_imports_a_task_clone_branch() {
+  local base home proj id main clone fix out before
+  base="$TMP_ROOT/local-merge-clone"
+  home="$base/home"
+  proj="$base/proj"
+  id=local-merge-clone-e3
+  mkdir -p "$home/state" "$home/data" "$proj"
+  git -C "$proj" init -q -b main || fail "could not initialize the task-clone merge fixture"
+  git -C "$proj" config user.email test@example.com
+  git -C "$proj" config user.name test
+  printf 'base\n' > "$proj/base"
+  git -C "$proj" add base || fail "could not stage the fixture base"
+  git -C "$proj" commit -qm base || fail "could not commit the fixture base"
+  main=$(git -C "$proj" rev-parse HEAD)
+  clone=$(FM_HOME="$home" FM_ROOT="$ROOT" FM_TASK_CLONE_ROOT="$base/clones" \
+    bash -c '. "$1/bin/fm-task-clone-lib.sh" && fm_task_clone_create "$2" "$3" "$4"' _ \
+    "$ROOT" "$proj" "$id" "$home") || fail "could not create the fixture's task clone"
+  git -C "$clone" checkout -qb "fm/$id" || fail "could not start the task branch in the clone"
+  printf 'change\n' > "$clone/change"
+  git -C "$clone" add change || fail "could not stage the task clone change"
+  git -C "$clone" -c user.email=t@t -c user.name=t commit -qm change \
+    || fail "could not commit in the task clone"
+  fix=$(git -C "$clone" rev-parse HEAD)
+  printf 'project=%s\nmode=local-only\nbranch=fm/%s\nworktree=%s\nworktree_layout=clone\n' \
+    "$proj" "$id" "$clone" > "$home/state/$id.meta"
+
+  printf 'someone-else\n%s\n' "$(cd "$home" && pwd -P)" > "$base/clones/$id/.fm-task-clone"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$MERGE_LOCAL" "$id" 2>&1) \
+    && fail "a local merge from a clone the task does not own succeeded: $out"
+  assert_contains "$out" "is not the task clone this home made for it" "the refusal did not name the clone's ownership"
+  [ "$(git -C "$proj" rev-parse HEAD)" = "$main" ] || fail "a refused local merge moved the project's main"
+  printf '%s\n%s\n' "$id" "$(cd "$home" && pwd -P)" > "$base/clones/$id/.fm-task-clone"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$MERGE_LOCAL" "$id" 2>&1) \
+    || fail "local merge from a task clone failed: $out"
+  [ "$(git -C "$proj" rev-parse HEAD)" = "$fix" ] \
+    || fail "local merge did not fast-forward the project's main to the task clone's branch"
+  assert_contains "$out" "merged fm/$id into local main" "local merge did not report the task clone's branch"
+  [ -z "$(git -C "$proj" for-each-ref "refs/heads/fm/" "refs/fm-task-clone/")" ] \
+    || fail "local merge left a branch or import ref for the task clone in the project: $(git -C "$proj" for-each-ref)"
+
+  printf 'more\n' > "$clone/more"
+  git -C "$clone" add more || fail "could not stage a later commit in the task clone"
+  git -C "$clone" -c user.email=t@t -c user.name=t commit -qm more \
+    || fail "could not add a later commit in the task clone"
+  printf 'diverge\n' > "$proj/diverge"
+  git -C "$proj" add diverge || fail "could not stage the divergence"
+  git -C "$proj" commit -qm diverge || fail "could not diverge the project's main"
+  before=$(git -C "$proj" rev-parse HEAD)
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$MERGE_LOCAL" "$id" 2>&1) \
+    && fail "a diverged task clone branch merged: $out"
+  assert_contains "$out" "is not a fast-forward" "the refusal did not name the divergence"
+  [ "$(git -C "$proj" rev-parse HEAD)" = "$before" ] || fail "a refused local merge moved the project's main"
+  [ -z "$(git -C "$proj" for-each-ref "refs/fm-task-clone/")" ] || fail "a refused local merge left an import ref behind"
+  pass "fm-merge-local: a task clone's branch is merged through a temporary import, and refused when unowned or diverged"
+}
+
 # A registered name may contain spaces, and the lookup must match the whole
 # name rather than only its first whitespace-delimited token (issue #1977).
 # The longer "foo bar" row is listed before the "foo" row so a leading-prefix
@@ -1691,6 +1754,7 @@ test_promotion_delivers_the_real_definition_of_done
 test_promotion_persists_the_selected_ship_branch
 test_promotion_branch_command_is_shell_safe
 test_local_merge_uses_the_recorded_ship_branch
+test_local_merge_imports_a_task_clone_branch
 test_project_mode_matches_whole_multiword_names
 test_project_mode_maps_the_conditional_policy
 test_project_mode_binds_the_forge_orthogonally

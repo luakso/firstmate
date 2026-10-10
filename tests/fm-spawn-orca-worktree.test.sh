@@ -118,6 +118,46 @@ EOF
   pass "an Orca-backed fresh spawn enters the worktree Orca created for it, instead of hard-refusing on the post-launch proof"
 }
 
+# Orca provides its own linked worktree, whose shared git data Claude Code's
+# sandbox would leave writable, so a sandboxed Claude spawn on backend=orca
+# refuses before Orca creates anything (docs/configuration.md "Claude sandbox").
+test_orca_refuses_a_sandboxed_claude_spawn() {
+  local case_dir home id=orca-sandbox-a3 fb out status
+  case_dir="$TMP_ROOT/sandbox"
+  home="$case_dir/home"
+  mkdir -p "$home/data" "$home/projects" "$home/state" "$home/config"
+  touch "$home/state/.last-watcher-beat"
+  printf 'claude\n' > "$home/config/crew-harness"
+  printf 'manual\n' > "$home/config/backlog-backend"
+  printf 'on\n' > "$home/config/claude-sandbox"
+  printf 'auto\n' > "$home/config/claude-permission-mode"
+  fm_git_init_commit "$case_dir/project"
+  mkdir -p "$home/data/$id"
+  cat > "$home/data/$id/brief.md" <<BRIEF
+# Task
+## Captain's intent
+Exercise a sandboxed Orca-backed spawn for $id.
+
+## Firstmate spec
+Confirm it refuses before Orca creates a linked worktree.
+BRIEF
+  fb=$(make_orca_fakebin "$case_dir")
+
+  out=$(FM_ROOT_OVERRIDE='' FM_HOME="$home" HOME="$case_dir/user-home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_TEST_ORCA_DIR="$case_dir" PATH="$fb:$PATH" \
+    "$SPAWN" "$id" "$case_dir/project" --mode no-mistakes --yolo off --backend orca --harness claude 2>&1)
+  status=$?
+
+  expect_code 1 "$status" "a sandboxed claude spawn on backend=orca must refuse"
+  assert_contains "$out" "backend=orca provides a linked worktree that shares its project clone's git data" \
+    "the refusal did not name Orca's shared git data"$'\n'"$out"
+  assert_absent "$case_dir/orca-worktrees" "Orca created a worktree before the sandbox refusal"
+  assert_absent "$home/state/$id.meta" "the refused spawn published a task record"
+  pass "a sandboxed claude spawn on backend=orca refuses before Orca creates a linked worktree"
+}
+
 test_orca_relaunch_is_refused_before_the_worktree_carveout_could_run() {
   local case_dir home proj wt id=orca-relaunch-a2 out status
   case_dir="$TMP_ROOT/relaunch"
@@ -166,5 +206,6 @@ EOF
 
 test_orca_fresh_spawn_enters_the_worktree_it_created
 test_orca_relaunch_is_refused_before_the_worktree_carveout_could_run
+test_orca_refuses_a_sandboxed_claude_spawn
 
 echo "# all fm-spawn-orca-worktree tests passed"
