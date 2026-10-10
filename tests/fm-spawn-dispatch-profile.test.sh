@@ -2047,6 +2047,7 @@ if [ "${FM_TEST_GO_STATUS:-0}" != 0 ]; then
 fi
 EOF
   chmod +x "$1/go"
+  # shellcheck disable=SC2016 # the fake claude expands FM_TEST_CLAUDE_MARK at its own run time
   printf '#!/usr/bin/env bash\n: > "$FM_TEST_CLAUDE_MARK"\n' > "$1/claude"
   chmod +x "$1/claude"
 }
