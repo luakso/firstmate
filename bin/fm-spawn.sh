@@ -347,10 +347,9 @@
 #   fresh worktree with a root go.mod or go.work into that cache outside the
 #   fence, in the pane's own launch command ahead of claude with GOTOOLCHAIN=local
 #   and no direct proxy fallback (a failure only warns; a relaunch never
-#   downloads, since the worker controls its go.mod and cache), and pre-creates the task's status log so its append grant has a file to
-#   cover.
-#   When the worktree
-#   carries a .claude/settings.json, whatever it holds, the launch passes
+#   downloads, since the worker controls its go.mod and cache), and pre-creates
+#   the task's status log so its append grant has a file to cover. When the
+#   worktree carries a .claude/settings.json, whatever it holds, the launch passes
 #   --setting-sources user,local so its hooks and helper commands never run
 #   outside the fence and its keys never merge into it, and tells the worker to
 #   read the project instructions Claude then skips. Skipping that file also
