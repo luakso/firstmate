@@ -2029,33 +2029,37 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
 }
 
 # The fence refuses the host the Go proxy redirects module zips to, so a
-# sandboxed spawn of a worktree with a root go.mod or go.work runs
-# `go mod download` outside the fence into the task's own module cache after
-# the task record is published and the task-set lock is released, before the
-# worker launches; a failure warns without blocking the launch, and a non-Go or
-# unsandboxed worktree never runs go. The fake records what the spawn had done
-# when the download ran, and can leave a read-only module tree as Go does.
+# fresh sandboxed spawn of a worktree with a root go.mod or go.work has its pane
+# launch command run `go mod download` outside the fence into the task's own
+# module cache with a pinned environment, before claude starts; a failure warns
+# without blocking the launch, and a relaunch, a non-Go or an unsandboxed
+# worktree never runs go. The fake records the environment and whether claude
+# had launched when the download ran.
 fake_go_for_sandbox() {  # <fakebin>
   cat > "$1/go" <<'EOF'
 #!/usr/bin/env bash
-record=unpublished
-[ ! -e "$FM_TEST_GO_META" ] || record=published
-task_set=unlocked
-{ [ ! -e "$FM_TEST_GO_TASK_SET_LOCK" ] && [ ! -L "$FM_TEST_GO_TASK_SET_LOCK" ]; } || task_set=locked
 launch=unsent
-[ ! -s "${FM_FAKE_LAUNCH_LOG:-}" ] || launch=sent
-printf '%s|%s|%s|%s|%s|%s|%s\n' "$(pwd -P)" "$*" "${GOMODCACHE-}" "${GOCACHE-}" "$record" "$task_set" "$launch" >> "$FM_TEST_GO_LOG"
-if [ "${FM_TEST_GO_READONLY_TREE:-0}" = 1 ]; then
-  mkdir -p "$GOMODCACHE/example.com/dep@v1.0.0" &&
-    printf 'module example.com/dep\n' > "$GOMODCACHE/example.com/dep@v1.0.0/go.mod" &&
-    chmod -R a-w "$GOMODCACHE/example.com"
-fi
+[ ! -e "${FM_TEST_CLAUDE_MARK:-}" ] || launch=sent
+printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$(pwd -P)" "$*" "${GOMODCACHE-}" "${GOCACHE-}" "${GOTOOLCHAIN-}" "${GOPROXY-}" "${GOFLAGS-unset}" "$launch" >> "$FM_TEST_GO_LOG"
 if [ "${FM_TEST_GO_STATUS:-0}" != 0 ]; then
   echo "go: example.com/missing@v1.0.0: fake download failure" >&2
   exit "$FM_TEST_GO_STATUS"
 fi
 EOF
   chmod +x "$1/go"
+  printf '#!/usr/bin/env bash\n: > "$FM_TEST_CLAUDE_MARK"\n' > "$1/claude"
+  chmod +x "$1/claude"
+}
+
+# The pane runs the emitted launch command; replay it with the fake go and a
+# fake claude, in the worker's ambient environment (a hostile GOTOOLCHAIN and
+# GOFLAGS the download must override).
+replay_sandbox_launch() {
+  rm -f "$CASE_DIR/claude.mark"
+  out=$(cd "$WT_DIR" && FM_TEST_GO_LOG="$GO_LOG" FM_TEST_GO_STATUS="${FM_TEST_GO_STATUS:-0}" \
+    FM_TEST_CLAUDE_MARK="$CASE_DIR/claude.mark" GOTOOLCHAIN=auto GOFLAGS=-mod=mod \
+    PATH="$FAKEBIN_DIR:$PATH" sh -c "$(cat "$LAUNCH_LOG")" 2>&1)
+  status=$?
 }
 
 sandbox_go_setup() {  # <name> <id> <sandbox> <root file: go.mod|go.work|none>
@@ -2084,9 +2088,7 @@ sandbox_go_setup() {  # <name> <id> <sandbox> <root file: go.mod|go.work|none>
 
 sandbox_go_spawn() {  # <id> <go-status>
   local id=$1 go_status=$2
-  out=$(FM_TEST_GO_LOG="$GO_LOG" FM_TEST_GO_STATUS="$go_status" FM_TEST_GO_META="$HOME_DIR/state/$id.meta" \
-    FM_TEST_GO_TASK_SET_LOCK="$HOME_DIR/state/.task-set.lock" FM_TEST_GO_READONLY_TREE="${FM_TEST_GO_READONLY_TREE:-0}" \
-    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
   rm -rf -- "/tmp/fm-$id"
 }
@@ -2102,39 +2104,72 @@ test_claude_sandbox_downloads_go_modules_at_spawn() {
   expect_code 0 "$status" "sandboxed Go module spawn should succeed"$'\n'"$out"
   state_real=$(cd "$HOME_DIR/state" && pwd -P)
   wt_real=$(cd "$WT_DIR" && pwd -P)
+  [ ! -e "$GO_LOG" ] || fail "the spawn itself ran go mod download instead of the pane's launch command"
+  replay_sandbox_launch
+  expect_code 0 "$status" "the sandboxed Go launch command should run"$'\n'"$out"
   [ -s "$GO_LOG" ] || fail "a sandboxed spawn of a Go module worktree did not download its modules"
-  [ "$(cat "$GO_LOG")" = "$wt_real|mod download|$state_real/sandbox-go-ok-z40.gocache/mod|$state_real/sandbox-go-ok-z40.gocache/build|published|unlocked|unsent" ] \
-    || fail "go mod download did not run in the worktree with the task's own caches after publication and lock release but before launch"$'\n'"$(cat "$GO_LOG")"
+  [ -e "$CASE_DIR/claude.mark" ] || fail "the launch command never reached claude"
+  [ "$(cat "$GO_LOG")" = "$wt_real|mod download|$state_real/sandbox-go-ok-z40.gocache/mod|$state_real/sandbox-go-ok-z40.gocache/build|local|https://proxy.golang.org||unsent" ] \
+    || fail "go mod download did not run in the worktree with the task's own caches with a pinned environment before claude starts"$'\n'"$(cat "$GO_LOG")"
   [ -s "$LAUNCH_LOG" ] || fail "the sandboxed Go module worker did not launch"
+
+  # A relaunch's go.mod and module cache are worker-controlled, so it never
+  # downloads.
+  rm -f "$GO_LOG"
+  mkdir -p "$CASE_DIR/idle-pane"
+  cat > "$CASE_DIR/idle-pane/tmux" <<'SH'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in
+    *pane_current_command*) printf 'zsh\n'; exit 0 ;;
+  esac
+done
+exec "$FM_TEST_REAL_TMUX" "$@"
+SH
+  chmod +x "$CASE_DIR/idle-pane/tmux"
+  out=$(FM_TEST_REAL_TMUX="$FAKEBIN_DIR/tmux" FM_FAKE_DUPLICATE_WINDOW=fm-sandbox-go-ok-z40 run_spawn "$HOME_DIR" "$WT_DIR" "$CASE_DIR/idle-pane:$FAKEBIN_DIR" "$LAUNCH_LOG" --relaunch sandbox-go-ok-z40)
+  status=$?
+  expect_code 0 "$status" "relaunching a sandboxed Go module task should succeed"$'\n'"$out"
+  [ -s "$LAUNCH_LOG" ] || fail "the relaunched sandboxed Go module worker did not launch"
+  replay_sandbox_launch
+  expect_code 0 "$status" "the relaunched Go launch command should run"$'\n'"$out"
+  [ -e "$CASE_DIR/claude.mark" ] || fail "the relaunch command never reached claude"
+  [ ! -e "$GO_LOG" ] || fail "a relaunch ran go mod download"$'\n'"$(cat "$GO_LOG")"
 
   # Workspace mode reaches every module the workspace uses, so a root go.work
   # without a root go.mod still downloads.
   sandbox_go_case sandbox-go-work sandbox-go-work-z41 on go.work 0
   expect_code 0 "$status" "sandboxed Go workspace spawn should succeed"$'\n'"$out"
   wt_real=$(cd "$WT_DIR" && pwd -P)
+  replay_sandbox_launch
   [ "$(cut -d'|' -f1,2 "$GO_LOG")" = "$wt_real|mod download" ] \
     || fail "a sandboxed spawn of a Go workspace worktree did not download its modules"$'\n'"$(cat "$GO_LOG" 2>/dev/null)"
 
   sandbox_go_case sandbox-go-fail sandbox-go-fail-z43 on go.mod 1
   expect_code 0 "$status" "a failed module download must not block the sandboxed spawn"$'\n'"$out"
+  FM_TEST_GO_STATUS=1 replay_sandbox_launch
+  expect_code 0 "$status" "a failed module download must not stop the launch command"$'\n'"$out"
+  [ -e "$CASE_DIR/claude.mark" ] || fail "the launch command did not reach claude after a failed module download"
   assert_contains "$out" "warning: go mod download for the sandboxed worker" "a failed module download did not warn"
   assert_contains "$out" "fake download failure" "the download warning did not show go's error"
   [ -s "$LAUNCH_LOG" ] || fail "the worker did not launch after a failed module download"
 
   sandbox_go_case sandbox-go-none sandbox-go-none-z44 on none 0
   expect_code 0 "$status" "sandboxed non-Go spawn should succeed"$'\n'"$out"
+  replay_sandbox_launch
   [ ! -e "$GO_LOG" ] || fail "a sandboxed spawn of a non-Go worktree ran go"$'\n'"$(cat "$GO_LOG")"
 
   sandbox_go_case sandbox-go-off sandbox-go-off-z45 off go.mod 0
   expect_code 0 "$status" "unsandboxed Go module spawn should succeed"$'\n'"$out"
+  replay_sandbox_launch
   [ ! -e "$GO_LOG" ] || fail "an unsandboxed spawn ran go mod download"$'\n'"$(cat "$GO_LOG")"
-  pass "config/claude-sandbox=on downloads a Go worktree's modules into the task cache after publication and lock release, before launch"
+  pass "config/claude-sandbox=on downloads a Go worktree's modules into the task cache from the launch command, before claude starts"
 }
 
-# No teardown ever reaches the module cache of a spawn that fails before its
+# No teardown ever reaches the task cache of a spawn that fails before its
 # worker launches and rolls its task record back, so the spawn removes it
-# itself, read-only module trees included. A world-writable launch directory
-# fails the spawn after the download and before the launch is sent.
+# itself. A world-writable launch directory fails the spawn before the launch
+# is sent.
 test_claude_sandbox_failed_spawn_removes_its_module_cache() {
   local id=sandbox-go-abort-z46 out status home_real token launch_dir
   sandbox_go_setup sandbox-go-abort "$id" on go.mod
@@ -2149,16 +2184,15 @@ test_claude_sandbox_failed_spawn_removes_its_module_cache() {
   if ! { mkdir -p "$launch_dir" && chmod 777 "$launch_dir"; }; then
     fail "could not plant the refused launch directory"
   fi
-  FM_TEST_GO_READONLY_TREE=1 sandbox_go_spawn "$id" 0
+  sandbox_go_spawn "$id" 0
   rm -rf -- "$launch_dir"
   [ "$status" -ne 0 ] || fail "a spawn whose launch directory is refused should fail"$'\n'"$out"
   assert_contains "$out" "task launch directory $launch_dir already exists" \
-    "the spawn did not fail where the test expects, after the module download"
-  [ -s "$GO_LOG" ] || fail "the failed spawn never reached its module download"$'\n'"$out"
+    "the spawn did not fail where the test expects"
   assert_absent "$HOME_DIR/state/$id.meta" "the failed spawn left its task record behind"
   if [ -e "$HOME_DIR/state/$id.gocache" ]; then
     chmod -R u+w "$HOME_DIR/state/$id.gocache"
-    fail "a spawn that failed without a surviving task record left its read-only module cache behind"
+    fail "a spawn that failed without a surviving task record left its task cache behind"
   fi
   pass "config/claude-sandbox=on removes a failed spawn's module cache when no task record survives"
 }
