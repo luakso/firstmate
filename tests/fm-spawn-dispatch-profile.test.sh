@@ -1840,8 +1840,8 @@ assert_sandboxed_task_clone() {  # <kind> <task-id> <clone>
   [ "$(git -C "$clone" rev-parse HEAD)" = "$(git --git-dir="$PROJ_DIR.origin.git" rev-parse refs/heads/main)" ] \
     || fail "claude $kind task clone does not start at the freshly fetched default branch"
   before=$(git -C "$PROJ_DIR" for-each-ref --format='%(refname) %(objectname)')
-  git -C "$clone" checkout -q -b "fm/$id" &&
-    git -C "$clone" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+  git -C "$clone" checkout -q -b "fm/$id" || fail "could not branch in claude $kind's task clone"
+  git -C "$clone" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
       commit -q --allow-empty -m "work in the task clone" || fail "could not commit in claude $kind's task clone"
   sha=$(git -C "$clone" rev-parse HEAD)
   after=$(git -C "$PROJ_DIR" for-each-ref --format='%(refname) %(objectname)')

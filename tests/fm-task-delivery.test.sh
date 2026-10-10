@@ -506,14 +506,16 @@ test_local_merge_imports_a_task_clone_branch() {
   git -C "$proj" config user.email test@example.com
   git -C "$proj" config user.name test
   printf 'base\n' > "$proj/base"
-  git -C "$proj" add base && git -C "$proj" commit -qm base || fail "could not commit the fixture base"
+  git -C "$proj" add base || fail "could not stage the fixture base"
+  git -C "$proj" commit -qm base || fail "could not commit the fixture base"
   main=$(git -C "$proj" rev-parse HEAD)
   clone=$(FM_HOME="$home" FM_ROOT="$ROOT" FM_TASK_CLONE_ROOT="$base/clones" \
     bash -c '. "$1/bin/fm-task-clone-lib.sh" && fm_task_clone_create "$2" "$3" "$4"' _ \
     "$ROOT" "$proj" "$id" "$home") || fail "could not create the fixture's task clone"
   git -C "$clone" checkout -qb "fm/$id" || fail "could not start the task branch in the clone"
   printf 'change\n' > "$clone/change"
-  git -C "$clone" add change && git -C "$clone" -c user.email=t@t -c user.name=t commit -qm change \
+  git -C "$clone" add change || fail "could not stage the task clone change"
+  git -C "$clone" -c user.email=t@t -c user.name=t commit -qm change \
     || fail "could not commit in the task clone"
   fix=$(git -C "$clone" rev-parse HEAD)
   printf 'project=%s\nmode=local-only\nbranch=fm/%s\nworktree=%s\nworktree_layout=clone\n' \
@@ -535,10 +537,12 @@ test_local_merge_imports_a_task_clone_branch() {
     || fail "local merge left a branch or import ref for the task clone in the project: $(git -C "$proj" for-each-ref)"
 
   printf 'more\n' > "$clone/more"
-  git -C "$clone" add more && git -C "$clone" -c user.email=t@t -c user.name=t commit -qm more \
+  git -C "$clone" add more || fail "could not stage a later commit in the task clone"
+  git -C "$clone" -c user.email=t@t -c user.name=t commit -qm more \
     || fail "could not add a later commit in the task clone"
   printf 'diverge\n' > "$proj/diverge"
-  git -C "$proj" add diverge && git -C "$proj" commit -qm diverge || fail "could not diverge the project's main"
+  git -C "$proj" add diverge || fail "could not stage the divergence"
+  git -C "$proj" commit -qm diverge || fail "could not diverge the project's main"
   before=$(git -C "$proj" rev-parse HEAD)
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$MERGE_LOCAL" "$id" 2>&1) \
     && fail "a diverged task clone branch merged: $out"

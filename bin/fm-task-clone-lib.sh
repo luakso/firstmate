@@ -41,7 +41,7 @@
 
 FM_TASK_CLONE_MARKER=.fm-task-clone
 
-FM_TASK_CLONE_LIB_DIR=$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; CDPATH= cd "${d:-/}" && pwd -P)
+FM_TASK_CLONE_LIB_DIR=$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; CDPATH='' cd "${d:-/}" && pwd -P)
 # shellcheck source=bin/fm-path-lib.sh
 . "$FM_TASK_CLONE_LIB_DIR/fm-path-lib.sh"
 
