@@ -2057,7 +2057,7 @@ EOF
 # GOFLAGS the download must override).
 replay_sandbox_launch() {
   rm -f "$CASE_DIR/claude.mark"
-  out=$(cd "$WT_DIR" && FM_TEST_GO_LOG="$GO_LOG" FM_TEST_GO_STATUS="${FM_TEST_GO_STATUS:-0}" \
+  out=$(cd "$GO_WT" && FM_TEST_GO_LOG="$GO_LOG" FM_TEST_GO_STATUS="${FM_TEST_GO_STATUS:-0}" \
     FM_TEST_CLAUDE_MARK="$CASE_DIR/claude.mark" GOTOOLCHAIN=auto GOFLAGS=-mod=mod \
     PATH="$FAKEBIN_DIR:$PATH" sh -c "$(cat "$LAUNCH_LOG")" 2>&1)
   status=$?
@@ -2085,11 +2085,14 @@ sandbox_go_setup() {  # <name> <id> <sandbox> <root file: go.mod|go.work|none>
   fi
   fake_go_for_sandbox "$FAKEBIN_DIR"
   GO_LOG="$CASE_DIR/go.log"
+  # A sandboxed Claude worker runs in its own task clone, not the pooled worktree.
+  GO_WT=$WT_DIR
+  [ "$sandbox_mode" != on ] || GO_WT=$(task_clone_path "$id")
 }
 
 sandbox_go_spawn() {  # <id> <go-status>
   local id=$1 go_status=$2
-  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  out=$(run_ship_spawn "$HOME_DIR" "$GO_WT" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
   rm -rf -- "/tmp/fm-$id"
 }
@@ -2104,7 +2107,7 @@ test_claude_sandbox_downloads_go_modules_at_spawn() {
   sandbox_go_case sandbox-go-ok sandbox-go-ok-z40 on go.mod 0
   expect_code 0 "$status" "sandboxed Go module spawn should succeed"$'\n'"$out"
   state_real=$(cd "$HOME_DIR/state" && pwd -P)
-  wt_real=$(cd "$WT_DIR" && pwd -P)
+  wt_real=$(cd "$GO_WT" && pwd -P)
   [ ! -e "$GO_LOG" ] || fail "the spawn itself ran go mod download instead of the pane's launch command"
   replay_sandbox_launch
   expect_code 0 "$status" "the sandboxed Go launch command should run"$'\n'"$out"
@@ -2128,7 +2131,7 @@ done
 exec "$FM_TEST_REAL_TMUX" "$@"
 SH
   chmod +x "$CASE_DIR/idle-pane/tmux"
-  out=$(FM_TEST_REAL_TMUX="$FAKEBIN_DIR/tmux" FM_FAKE_DUPLICATE_WINDOW=fm-sandbox-go-ok-z40 run_spawn "$HOME_DIR" "$WT_DIR" "$CASE_DIR/idle-pane:$FAKEBIN_DIR" "$LAUNCH_LOG" --relaunch sandbox-go-ok-z40)
+  out=$(FM_TEST_REAL_TMUX="$FAKEBIN_DIR/tmux" FM_FAKE_DUPLICATE_WINDOW=fm-sandbox-go-ok-z40 run_spawn "$HOME_DIR" "$GO_WT" "$CASE_DIR/idle-pane:$FAKEBIN_DIR" "$LAUNCH_LOG" --relaunch sandbox-go-ok-z40)
   status=$?
   expect_code 0 "$status" "relaunching a sandboxed Go module task should succeed"$'\n'"$out"
   [ -s "$LAUNCH_LOG" ] || fail "the relaunched sandboxed Go module worker did not launch"
@@ -2141,7 +2144,7 @@ SH
   # without a root go.mod still downloads.
   sandbox_go_case sandbox-go-work sandbox-go-work-z41 on go.work 0
   expect_code 0 "$status" "sandboxed Go workspace spawn should succeed"$'\n'"$out"
-  wt_real=$(cd "$WT_DIR" && pwd -P)
+  wt_real=$(cd "$GO_WT" && pwd -P)
   replay_sandbox_launch
   [ "$(cut -d'|' -f1,2 "$GO_LOG")" = "$wt_real|mod download" ] \
     || fail "a sandboxed spawn of a Go workspace worktree did not download its modules"$'\n'"$(cat "$GO_LOG" 2>/dev/null)"
