@@ -1,0 +1,29 @@
+# get https://proxy.golang.org/golang.org/x/text/@v/v0.14.0.info
+# get https://proxy.golang.org/golang.org/x/text/@v/v0.14.0.info: 200 OK (1.412s)
+# get https://proxy.golang.org/golang.org/x/text/@v/v0.14.0.mod
+# get https://proxy.golang.org/golang.org/x/text/@v/v0.14.0.mod: 200 OK (0.341s)
+# get https://proxy.golang.org/sumdb/sum.golang.org/supported
+# get https://proxy.golang.org/sumdb/sum.golang.org/supported: 404 Not Found (0.564s)
+# get https://sum.golang.org/tile/8/0/x264/571.p/163
+# get https://sum.golang.org/tile/8/2/004.p/9
+# get https://sum.golang.org/tile/8/3/000.p/4
+# get https://sum.golang.org/tile/8/1/x001/033.p/123
+# get https://sum.golang.org/tile/8/3/000.p/4: 200 OK (1.111s)
+# get https://sum.golang.org/tile/8/1/x001/033.p/123: 200 OK (1.152s)
+# get https://sum.golang.org/tile/8/0/x264/571.p/163: 200 OK (1.152s)
+# get https://sum.golang.org/tile/8/2/004.p/9: 200 OK (1.152s)
+# get https://sum.golang.org/lookup/golang.org/x/text@v0.14.0
+# get https://sum.golang.org/lookup/golang.org/x/text@v0.14.0: 200 OK (0.313s)
+# get https://sum.golang.org/tile/8/0/x264/404
+# get https://sum.golang.org/tile/8/1/x001/032
+# get https://sum.golang.org/tile/8/1/x001/032: 200 OK (0.275s)
+# get https://sum.golang.org/tile/8/0/x264/404: 200 OK (0.316s)
+# get https://sum.golang.org/tile/8/0/x080/021
+# get https://sum.golang.org/tile/8/2/001
+# get https://sum.golang.org/tile/8/1/312
+# get https://sum.golang.org/tile/8/2/001: 200 OK (0.320s)
+# get https://sum.golang.org/tile/8/1/312: 200 OK (0.360s)
+# get https://sum.golang.org/tile/8/0/x080/021: 200 OK (0.411s)
+# get https://proxy.golang.org/golang.org/x/text/@v/v0.14.0.zip
+# get https://proxy.golang.org/golang.org/x/text/@v/v0.14.0.zip: 200 OK (0.284s)
+EXIT=0

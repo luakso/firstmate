@@ -1,0 +1,4 @@
+touch: cannot touch '/tmp/fm-lab.QWVUII/work/gouuid/fence-write': Read-only file system
+WRITE_EXIT=1
+curl: (7) CONNECT tunnel failed, response 403
+gcs=000CURL_EXIT=7

@@ -1,0 +1,2 @@
+/tmp/fm-lab.QWVUII/state/golab-a1.gocache/mod
+BUILD_OK

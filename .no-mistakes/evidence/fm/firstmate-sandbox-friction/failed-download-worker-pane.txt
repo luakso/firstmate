@@ -1,0 +1,24 @@
+cd -- '/tmp/fm-lab-clones.mow0KR/golab-b2/gobad'
+gobad main ❯ cd -- '/tmp/fm-lab-clones.mow0KR/golab-b2/gobad'
+󱞩 /tmp/fm-lab-clones.mow0KR/golab-b2/gobad
+gobad HEAD ❯ export GOTMPDIR=/tmp/fm-golab-b2/gotmp
+export COMPACT_ADVISER_DISABLE=1
+export FM_TASK_ID=golab-b2
+gobad HEAD ❯ export COMPACT_ADVISER_DISABLE=1
+gobad HEAD ❯ export FM_TASK_ID=golab-b2
+gobad HEAD ❯ . '/tmp/fm-golab-b2+5d69a60a297b9d3b7b8cf28222d44ae92170dc9cb62cd91bce0c4ee0d0f2c363/launch.s1791602646.3279144.7083.sh'
+go: github.com/google/uuid@v1.99.99: reading https://proxy.golang.org/github.com/google/uuid/@v/v1.99.99.mod: 404 Not Found
+	server response: not found: github.com/google/uuid@v1.99.99: invalid version: unknown revision v1.99.99
+warning: go mod download for the sandboxed worker failed or timed out; launching anyway, and modules it did not fetch cannot download inside the fence
+ ▐▛███▛█   Claude Code v2.1.290
+▝▜██████▀  Opus 5.5 with medium effort · Claude Max
+ ▝▝   ▝▝   /tmp/fm-lab-clones.mow0KR/golab-b2/gobad
+❯ : Firstmate operational input waiting: read '/tmp/fm-lab.QWVUII/state/operational-inbox/1791602647-dcb3ad171084e1a8.msg' and handle its contents as Firstmate operational input.
+  Read 1 file (ctrl+o to expand)
+● READY
+✻ Brewed for 7s · done 11:24 AM
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 5.5 gobad❯                                                                                                                                                               Update available! Run: mise upgrade claude
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents

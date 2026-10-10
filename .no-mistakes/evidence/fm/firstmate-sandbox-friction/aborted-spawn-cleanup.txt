@@ -1,0 +1,8 @@
+$ bin/fm-spawn.sh golab-c3 $LAB/work/gouuid --mode no-mistakes --yolo off   (with /tmp/fm-golab-c3+<token> pre-planted mode 777)
+fm-gate-refuse: gate agent lifecycle permitted only against lab home $LAB
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+error: task launch directory /tmp/fm-golab-c3+5d69a60a297b9d3b7b8cf28222d44ae92170dc9cb62cd91bce0c4ee0d0f2c363 already exists and is not a private directory owned by this user; refusing to stage the launch command there; inspect and remove it, then retry
+SPAWN_RC=1
+$ ls $LAB/state | grep golab-c3
+golab-c3.inbox
+golab-c3.status
