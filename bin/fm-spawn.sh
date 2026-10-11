@@ -3052,8 +3052,8 @@ claude_sandbox_go_mod_download_command() {  # <worktree> <gocache-dir>
 # runs lifecycle-script-free outside it. When a freshly spawned worktree root holds
 # a package-lock.json, pnpm-lock.yaml, or bun.lock (first found in that order),
 # print a shell fragment that runs that lockfile's frozen install, with lifecycle
-# scripts disabled and the registry pinned on the command line so a project
-# .npmrc or bunfig cannot redirect it, into node_modules in the worktree and the
+# scripts disabled (for pnpm also the repo's .pnpmfile.cjs and any packageManager
+# version switch) and the default registry set on the command line, into node_modules in the worktree and the
 # task's own package cache under <gocache-dir>/npm, pnpm, or bun. Like the Go
 # download it is part of the pane's own launch command, ahead of claude, never
 # applies to a relaunch, is bounded by a timeout, and only warns on any failure.
@@ -3065,7 +3065,7 @@ claude_sandbox_js_install_command() {  # <worktree> <gocache-dir>
     install_args="ci --ignore-scripts --no-audit --no-fund --registry https://registry.npmjs.org/ --cache $(shell_quote "$gocache/npm")"
   elif [ -f "$wt/pnpm-lock.yaml" ]; then
     tool=pnpm
-    install_args="install --frozen-lockfile --ignore-scripts --registry https://registry.npmjs.org/ --store-dir $(shell_quote "$gocache/pnpm")"
+    install_args="install --frozen-lockfile --ignore-scripts --ignore-pnpmfile --config.manage-package-manager-versions=false --registry https://registry.npmjs.org/ --store-dir $(shell_quote "$gocache/pnpm")"
   elif [ -f "$wt/bun.lock" ]; then
     tool=bun
     install_args="install --frozen-lockfile --ignore-scripts --registry https://registry.npmjs.org/"
