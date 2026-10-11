@@ -347,7 +347,9 @@
 #   fresh worktree with a root go.mod or go.work into that cache outside the
 #   fence, in the pane's own launch command ahead of claude with GOTOOLCHAIN=local
 #   and no direct proxy fallback (a failure only warns; a relaunch never
-#   downloads, since the worker controls its go.mod and cache), and pre-creates
+#   downloads, since the worker controls its go.mod and cache), likewise
+#   installs a root package-lock.json, pnpm-lock.yaml, or bun.lock frozen with
+#   lifecycle scripts off (claude_sandbox_js_install_command), and pre-creates
 #   the task's status log so its append grant has a file to cover. When the
 #   worktree carries a .claude/settings.json, whatever it holds, the launch passes
 #   --setting-sources user,local so its hooks and helper commands never run
@@ -2979,9 +2981,13 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
 # helper in the status command is not granted: it needs lock and offset files
 # across state/, the command already tolerates its failure, and the watcher's
 # per-poll capture records the same line. The Go module proxy and checksum
-# database are the only allowed hosts; the proxy's module zip downloads redirect
-# to a host the fence refuses, so claude_sandbox_go_mod_download_command fills the
-# per-task module cache at spawn instead.
+# database and the npm registry are the only allowed hosts; the proxy's module zip
+# downloads redirect to a host the fence refuses, so
+# claude_sandbox_go_mod_download_command fills the per-task module cache at spawn
+# instead. The registry serves its package tarballs from its own host, so it needs
+# no companion host, and it stays allowed so a worker in a repo with no lockfile
+# yet can run its first install inside the fence; with a lockfile,
+# claude_sandbox_js_install_command installs the locked dependencies at spawn.
 # excludedCommands run git push, gh, gh-axi, and no-mistakes outside the fence
 # under auto mode, which config/claude-sandbox=on requires, because they need
 # the D-Bus keyring login and the no-mistakes daemon socket. An excluded git
@@ -3003,7 +3009,7 @@ claude_sandbox_settings() {  # <state-dir> <data-dir> <task-tmp> <code-root> <ta
       allowUnsandboxedCommands: false,
       excludedCommands: ["git push", "git push *", "gh", "gh *", "gh-axi", "gh-axi *", "no-mistakes", "no-mistakes *"],
       filesystem: {allowWrite: $ARGS.positional, denyWrite: [$opinbox, $skills]},
-      network: {strictAllowlist: true, allowedDomains: ["proxy.golang.org", "sum.golang.org"]}
+      network: {strictAllowlist: true, allowedDomains: ["proxy.golang.org", "sum.golang.org", "registry.npmjs.org"]}
     }}' --args "$state_real/$id.status" "$state_real/$id.inbox" "$data_real/$id" "$tmp_real" "$state_real/$id.gocache") || return 1
   json=${json#\{}
   json=${json%\}}
@@ -3039,6 +3045,47 @@ claude_sandbox_go_mod_download_command() {  # <worktree> <gocache-dir>
     return 0
   fi
   printf '%s' "(cd $(shell_quote "$wt") && env GOTOOLCHAIN=local GOPROXY=https://proxy.golang.org GOFLAGS= GOMODCACHE=$(shell_quote "$gocache/mod") GOCACHE=$(shell_quote "$gocache/build") $timeout_cmd 90 go mod download </dev/null) || echo 'warning: go mod download for the sandboxed worker failed or timed out; launching anyway, and modules it did not fetch cannot download inside the fence' >&2; "
+}
+
+# config/claude-sandbox=on (header above): the fence reaches the npm registry, but
+# a lockfile-exact install at spawn spares the worker a cold install inside it and
+# runs lifecycle-script-free outside it. When a freshly spawned worktree root holds
+# a package-lock.json, pnpm-lock.yaml, or bun.lock (first found in that order),
+# print a shell fragment that runs that lockfile's frozen install, with lifecycle
+# scripts disabled (for pnpm also the repo's .pnpmfile.cjs and any packageManager
+# version switch) and the default registry set on the command line, into
+# node_modules in the worktree and the task's own package cache under
+# <gocache-dir>/npm, pnpm, or bun. Like the Go
+# download it is part of the pane's own launch command, ahead of claude, never
+# applies to a relaunch, is bounded by a timeout, and only warns on any failure.
+# A worktree with no lockfile is left for the worker's own first install.
+claude_sandbox_js_install_command() {  # <worktree> <gocache-dir>
+  local wt=$1 gocache=$2 timeout_cmd='' tool install_args
+  if [ -f "$wt/package-lock.json" ]; then
+    tool=npm
+    install_args="ci --ignore-scripts --no-audit --no-fund --registry https://registry.npmjs.org/ --cache $(shell_quote "$gocache/npm")"
+  elif [ -f "$wt/pnpm-lock.yaml" ]; then
+    tool=pnpm
+    install_args="install --frozen-lockfile --ignore-scripts --ignore-pnpmfile --config.manage-package-manager-versions=false --registry https://registry.npmjs.org/ --store-dir $(shell_quote "$gocache/pnpm")"
+  elif [ -f "$wt/bun.lock" ]; then
+    tool=bun
+    install_args="install --frozen-lockfile --ignore-scripts --registry https://registry.npmjs.org/"
+  else
+    return 0
+  fi
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "warning: $wt holds a $tool lockfile but $tool is not on PATH; the sandboxed worker starts without installed dependencies" >&2
+    return 0
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout_cmd=timeout
+  elif command -v gtimeout >/dev/null 2>&1; then
+    timeout_cmd=gtimeout
+  else
+    echo "warning: no timeout command on PATH; skipping the sandboxed worker's $tool install in $wt, so it starts without installed dependencies" >&2
+    return 0
+  fi
+  printf '%s' "(cd $(shell_quote "$wt") && env BUN_INSTALL_CACHE_DIR=$(shell_quote "$gocache/bun") $timeout_cmd 180 $tool $install_args </dev/null) || echo 'warning: $tool install for the sandboxed worker failed or timed out; launching anyway, and dependencies it did not install must be installed inside the fence' >&2; "
 }
 
 resolved_existing_dir() {
@@ -5458,7 +5505,9 @@ fi
 # The sandboxed worker's Go caches (claude_sandbox_settings above) ride the
 # launch command as an export, so they survive a filtered launch environment too.
 if [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
+  [ "$RELAUNCH" -eq 1 ] || LAUNCH="$(claude_sandbox_js_install_command "$WT" "$STATE_REAL/$ID.gocache")$LAUNCH"
   [ "$RELAUNCH" -eq 1 ] || LAUNCH="$(claude_sandbox_go_mod_download_command "$WT" "$STATE_REAL/$ID.gocache")$LAUNCH"
+  LAUNCH="export npm_config_cache=$(shell_quote "$STATE_REAL/$ID.gocache/npm") npm_config_store_dir=$(shell_quote "$STATE_REAL/$ID.gocache/pnpm") BUN_INSTALL_CACHE_DIR=$(shell_quote "$STATE_REAL/$ID.gocache/bun"); $LAUNCH"
   LAUNCH="export GOCACHE=$(shell_quote "$STATE_REAL/$ID.gocache/build") GOMODCACHE=$(shell_quote "$STATE_REAL/$ID.gocache/mod"); $LAUNCH"
 fi
 if [ "$KEEP_AI_TRAILERS" = 0 ]; then
