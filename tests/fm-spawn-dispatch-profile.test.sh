@@ -1956,7 +1956,7 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
         allowUnsandboxedCommands: false,
         excludedCommands: ["git push", "git push *", "gh", "gh *", "gh-axi", "gh-axi *", "no-mistakes", "no-mistakes *"],
         filesystem: {allowWrite: [$status, $inbox, $data, $tmp, $gocache], denyWrite: [$opinbox, $skills]},
-        network: {strictAllowlist: true, allowedDomains: ["proxy.golang.org", "sum.golang.org"]}
+        network: {strictAllowlist: true, allowedDomains: ["proxy.golang.org", "sum.golang.org", "registry.npmjs.org"]}
       }}')
     [ "$(printf '%s' "$settings" | jq -cS .)" = "$(printf '%s' "$want" | jq -cS .)" ] \
       || fail "claude $kind sandbox settings differ"$'\n'"expected: $want"$'\n'"actual:   $settings"
@@ -2075,6 +2075,7 @@ sandbox_go_setup() {  # <name> <id> <sandbox> <root file: go.mod|go.work|none>
   case "$root_file" in
   go.mod) printf 'module example.com/sandboxed\n\ngo 1.22\n' > "$PROJ_DIR/go.mod" ;;
   go.work) printf 'go 1.22\n\nuse ./server\n' > "$PROJ_DIR/go.work" ;;
+  package-lock.json | pnpm-lock.yaml | bun.lock) printf '{}\n' > "$PROJ_DIR/$root_file" ;;
   esac
   if [ "$root_file" != none ]; then
     if ! { git -C "$PROJ_DIR" add "$root_file" &&
@@ -2168,6 +2169,105 @@ SH
   replay_sandbox_launch
   [ ! -e "$GO_LOG" ] || fail "an unsandboxed spawn ran go mod download"$'\n'"$(cat "$GO_LOG")"
   pass "config/claude-sandbox=on downloads a Go worktree's modules into the task cache from the launch command, before claude starts"
+}
+
+# The fence reaches the npm registry, and a fresh sandboxed spawn of a worktree
+# with a root JavaScript lockfile has its pane launch command run that
+# lockfile's frozen install outside the fence first, with scripts off, the
+# registry pinned, and the task's own package cache. The fakes record the
+# environment and whether claude had launched when the install ran.
+fake_js_for_sandbox() {  # <fakebin>
+  local tool
+  for tool in npm pnpm bun; do
+    cat > "$1/$tool" <<'EOF'
+#!/usr/bin/env bash
+launch=unsent
+[ ! -e "${FM_TEST_CLAUDE_MARK:-}" ] || launch=sent
+printf '%s|%s|%s|%s|%s|%s\n' "$(pwd -P)" "$(basename "$0") $*" "${npm_config_cache-unset}" "${BUN_INSTALL_CACHE_DIR-}" "${npm_config_store_dir-unset}" "$launch" >> "$FM_TEST_JS_LOG"
+if [ "${FM_TEST_JS_STATUS:-0}" != 0 ]; then
+  echo "npm error fake install failure" >&2
+  exit "$FM_TEST_JS_STATUS"
+fi
+EOF
+    chmod +x "$1/$tool"
+  done
+}
+
+test_claude_sandbox_installs_js_dependencies_at_spawn() {
+  local out status state_real wt_real cache id reg lockfile tool args
+  reg=https://registry.npmjs.org/
+  for lockfile in package-lock.json pnpm-lock.yaml bun.lock; do
+    case "$lockfile" in
+    package-lock.json) tool=npm ;;
+    pnpm-lock.yaml) tool=pnpm ;;
+    bun.lock) tool=bun ;;
+    esac
+    id=sandbox-js-$tool-z5${#tool}
+    sandbox_go_case "sandbox-js-$tool" "$id" on "$lockfile" 0
+    expect_code 0 "$status" "sandboxed $lockfile spawn should succeed"$'\n'"$out"
+    state_real=$(cd "$HOME_DIR/state" && pwd -P)
+    wt_real=$(cd "$GO_WT" && pwd -P)
+    cache="$state_real/$id.gocache"
+    JS_LOG="$CASE_DIR/js.log"
+    fake_js_for_sandbox "$FAKEBIN_DIR"
+    [ ! -e "$JS_LOG" ] || fail "the spawn itself ran $tool install instead of the pane's launch command"
+    FM_TEST_JS_LOG="$JS_LOG" replay_sandbox_launch
+    expect_code 0 "$status" "the sandboxed $lockfile launch command should run"$'\n'"$out"
+    [ -e "$CASE_DIR/claude.mark" ] || fail "the $lockfile launch command never reached claude"
+    case "$tool" in
+    npm) args="npm ci --ignore-scripts --no-audit --no-fund --registry $reg --cache $cache/npm" ;;
+    pnpm) args="pnpm install --frozen-lockfile --ignore-scripts --registry $reg --store-dir $cache/pnpm" ;;
+    bun) args="bun install --frozen-lockfile --ignore-scripts --registry $reg" ;;
+    esac
+    [ "$(cat "$JS_LOG")" = "$wt_real|$args|$cache/npm|$cache/bun|$cache/pnpm|unsent" ] \
+      || fail "$tool did not install the locked dependencies in the worktree with the task's own caches before claude starts"$'\n'"$(cat "$JS_LOG")"
+    [ ! -e "$GO_LOG" ] || fail "a $lockfile worktree ran go"
+  done
+
+  # A relaunch's lockfile and node_modules are worker-controlled, so it never installs.
+  id=sandbox-js-bun-z53
+  sandbox_go_case sandbox-js-relaunch "$id" on package-lock.json 0
+  fake_js_for_sandbox "$FAKEBIN_DIR"
+  mkdir -p "$CASE_DIR/idle-pane"
+  cat > "$CASE_DIR/idle-pane/tmux" <<'SH'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in
+    *pane_current_command*) printf 'zsh\n'; exit 0 ;;
+  esac
+done
+exec "$FM_TEST_REAL_TMUX" "$@"
+SH
+  chmod +x "$CASE_DIR/idle-pane/tmux"
+  out=$(FM_TEST_REAL_TMUX="$FAKEBIN_DIR/tmux" FM_FAKE_DUPLICATE_WINDOW=fm-$id run_spawn "$HOME_DIR" "$GO_WT" "$CASE_DIR/idle-pane:$FAKEBIN_DIR" "$LAUNCH_LOG" --relaunch "$id")
+  status=$?
+  expect_code 0 "$status" "relaunching a sandboxed JavaScript task should succeed"$'\n'"$out"
+  rm -f "$JS_LOG"
+  FM_TEST_JS_LOG="$JS_LOG" replay_sandbox_launch
+  [ ! -e "$JS_LOG" ] || fail "a relaunch ran a package install"$'\n'"$(cat "$JS_LOG")"
+
+  # A failed install only warns.
+  sandbox_go_case sandbox-js-fail sandbox-js-fail-z56 on package-lock.json 0
+  expect_code 0 "$status" "a failed install must not block the sandboxed spawn"$'\n'"$out"
+  fake_js_for_sandbox "$FAKEBIN_DIR"
+  FM_TEST_JS_LOG="$JS_LOG" FM_TEST_JS_STATUS=1 replay_sandbox_launch
+  expect_code 0 "$status" "a failed install must not stop the launch command"$'\n'"$out"
+  [ -e "$CASE_DIR/claude.mark" ] || fail "the launch command did not reach claude after a failed install"
+  assert_contains "$out" "warning: npm install for the sandboxed worker" "a failed install did not warn"
+  assert_contains "$out" "fake install failure" "the install warning did not show npm's error"
+
+  # No lockfile (an empty repository) and an unsandboxed spawn never install.
+  sandbox_go_case sandbox-js-none sandbox-js-none-z57 on none 0
+  fake_js_for_sandbox "$FAKEBIN_DIR"
+  rm -f "$JS_LOG"
+  FM_TEST_JS_LOG="$JS_LOG" replay_sandbox_launch
+  [ ! -e "$JS_LOG" ] || fail "a worktree with no lockfile ran a package install"
+  sandbox_go_case sandbox-js-off sandbox-js-off-z58 off package-lock.json 0
+  fake_js_for_sandbox "$FAKEBIN_DIR"
+  rm -f "$JS_LOG"
+  FM_TEST_JS_LOG="$JS_LOG" replay_sandbox_launch
+  [ ! -e "$JS_LOG" ] || fail "an unsandboxed spawn ran a package install"
+  pass "config/claude-sandbox=on installs a JavaScript worktree's locked dependencies from the launch command, before claude starts"
 }
 
 # No teardown ever reaches the task cache of a spawn that fails before its
@@ -2451,6 +2551,7 @@ test_claude_sandbox_off_matches_absent_launch
 test_claude_sandbox_off_keeps_the_scout_completion_gate
 test_claude_sandbox_on_fences_ship_and_scout_launches
 test_claude_sandbox_downloads_go_modules_at_spawn
+test_claude_sandbox_installs_js_dependencies_at_spawn
 test_claude_sandbox_failed_spawn_removes_its_module_cache
 test_claude_sandbox_drops_committed_project_settings
 test_claude_sandbox_invalid_refuses_before_endpoint_or_metadata
