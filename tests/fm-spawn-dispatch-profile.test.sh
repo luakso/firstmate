@@ -2203,20 +2203,21 @@ test_claude_sandbox_installs_js_dependencies_at_spawn() {
     bun.lock) tool=bun ;;
     esac
     id=sandbox-js-$tool-z5${#tool}
-    sandbox_go_case "sandbox-js-$tool" "$id" on "$lockfile" 0
+    sandbox_go_setup "sandbox-js-$tool" "$id" on "$lockfile"
+    fake_js_for_sandbox "$FAKEBIN_DIR"
+    sandbox_go_spawn "$id" 0
     expect_code 0 "$status" "sandboxed $lockfile spawn should succeed"$'\n'"$out"
     state_real=$(cd "$HOME_DIR/state" && pwd -P)
     wt_real=$(cd "$GO_WT" && pwd -P)
     cache="$state_real/$id.gocache"
     JS_LOG="$CASE_DIR/js.log"
-    fake_js_for_sandbox "$FAKEBIN_DIR"
     [ ! -e "$JS_LOG" ] || fail "the spawn itself ran $tool install instead of the pane's launch command"
     FM_TEST_JS_LOG="$JS_LOG" replay_sandbox_launch
     expect_code 0 "$status" "the sandboxed $lockfile launch command should run"$'\n'"$out"
     [ -e "$CASE_DIR/claude.mark" ] || fail "the $lockfile launch command never reached claude"
     case "$tool" in
     npm) args="npm ci --ignore-scripts --no-audit --no-fund --registry $reg --cache $cache/npm" ;;
-    pnpm) args="pnpm install --frozen-lockfile --ignore-scripts --registry $reg --store-dir $cache/pnpm" ;;
+    pnpm) args="pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile --config.manage-package-manager-versions=false --registry $reg --store-dir $cache/pnpm" ;;
     bun) args="bun install --frozen-lockfile --ignore-scripts --registry $reg" ;;
     esac
     [ "$(cat "$JS_LOG")" = "$wt_real|$args|$cache/npm|$cache/bun|$cache/pnpm|unsent" ] \
@@ -2225,7 +2226,7 @@ test_claude_sandbox_installs_js_dependencies_at_spawn() {
   done
 
   # A relaunch's lockfile and node_modules are worker-controlled, so it never installs.
-  id=sandbox-js-bun-z53
+  id=sandbox-js-relaunch-z60
   sandbox_go_case sandbox-js-relaunch "$id" on package-lock.json 0
   fake_js_for_sandbox "$FAKEBIN_DIR"
   mkdir -p "$CASE_DIR/idle-pane"
