@@ -343,9 +343,13 @@
 #   sandboxed relaunch of a task recorded in a linked worktree. A clone task
 #   relaunched unsandboxed keeps working in its clone.
 #   With the sandbox on, the launch also gives the worker its own disk-backed
-#   GOCACHE and GOMODCACHE under state/<id>.gocache, and pre-creates the task's
-#   status log so its append grant has a file to cover. When the worktree
-#   carries a .claude/settings.json, whatever it holds, the launch passes
+#   GOCACHE and GOMODCACHE under state/<id>.gocache, downloads the modules of a
+#   fresh worktree with a root go.mod or go.work into that cache outside the
+#   fence, in the pane's own launch command ahead of claude with GOTOOLCHAIN=local
+#   and no direct proxy fallback (a failure only warns; a relaunch never
+#   downloads, since the worker controls its go.mod and cache), and pre-creates
+#   the task's status log so its append grant has a file to cover. When the
+#   worktree carries a .claude/settings.json, whatever it holds, the launch passes
 #   --setting-sources user,local so its hooks and helper commands never run
 #   outside the fence and its keys never merge into it, and tells the worker to
 #   read the project instructions Claude then skips. Skipping that file also
@@ -355,6 +359,9 @@
 #   scout's launch brief replaces its captain-hold completion gate, whose
 #   backlog and task-record writes fall outside the fence, with an inventory
 #   firstmate turns into hold and complete (fm_brief_sandbox_scout_overlay).
+#   A sandboxed no-mistakes ship's launch brief tells it how to spell every
+#   no-mistakes command so it still matches the no-mistakes exclusion
+#   (fm_brief_sandbox_no_mistakes_overlay).
 # Worker account pin (config/claude-account, config/pi-account):
 #   Opt-in. With no file, a Claude or Pi launch is unchanged: Claude still
 #   receives this process's own CLAUDE_CONFIG_DIR when it is set, and Pi the
@@ -1459,13 +1466,19 @@ spawn_abort_cleanup() {
   fi
   # The per-id spawn lock is retaken so a concurrent spawn of the same id, which
   # reinstalls this strip dir, is never undone. A launched agent whose endpoint
-  # was not closed may still be committing, so it keeps its strip.
-  if [ "$status" -ne 0 ] && [ -n "$GIT_HOOKS_DIR" ] &&
+  # was not closed may still be committing, so it keeps its strip. The sandboxed
+  # worker's Go caches go with the strip: without a surviving record no teardown
+  # reaches them, and Go leaves module trees read-only.
+  if [ "$status" -ne 0 ] && [ -n "$SPAWN_TASK_LOCK" ] &&
     { [ "$SPAWN_LAUNCH_SENT" = 0 ] || [ "$SPAWN_ENDPOINT_CLOSED" = 1 ]; } &&
     fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then
     if [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
-      chmod u+w "$GIT_HOOKS_DIR" 2>/dev/null || true
-      rm -rf "$GIT_HOOKS_DIR" 2>/dev/null || true
+      if [ -n "$GIT_HOOKS_DIR" ]; then
+        chmod u+w "$GIT_HOOKS_DIR" 2>/dev/null || true
+        rm -rf "$GIT_HOOKS_DIR" 2>/dev/null || true
+      fi
+      chmod -R u+w "$STATE/$ID.gocache" 2>/dev/null || true
+      rm -rf "$STATE/$ID.gocache" 2>/dev/null || true
     fi
     fm_lock_release "$SPAWN_TASK_LOCK" || true
   fi
@@ -2966,7 +2979,9 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
 # helper in the status command is not granted: it needs lock and offset files
 # across state/, the command already tolerates its failure, and the watcher's
 # per-poll capture records the same line. The Go module proxy and checksum
-# database are the only allowed hosts, so a per-task module cache can fill.
+# database are the only allowed hosts; the proxy's module zip downloads redirect
+# to a host the fence refuses, so claude_sandbox_go_mod_download_command fills the
+# per-task module cache at spawn instead.
 # excludedCommands run git push, gh, gh-axi, and no-mistakes outside the fence
 # under auto mode, which config/claude-sandbox=on requires, because they need
 # the D-Bus keyring login and the no-mistakes daemon socket. An excluded git
@@ -2993,6 +3008,37 @@ claude_sandbox_settings() {  # <state-dir> <data-dir> <task-tmp> <code-root> <ta
   json=${json#\{}
   json=${json%\}}
   printf ',%s' "${json//\'/\'\\\'\'}"
+}
+
+# config/claude-sandbox=on (header above): the fence's network allowlist reaches
+# proxy.golang.org but not storage.googleapis.com, where the proxy redirects
+# every module zip download, so a sandboxed worker cannot fill its cold module
+# cache itself. When a freshly spawned worktree root holds a go.mod or a go.work
+# (workspace mode covers every module it uses), print a shell fragment that
+# downloads the dependencies outside the fence, into the task's own GOMODCACHE.
+# The fragment is part of the pane's own launch command, ahead of claude, so no
+# spawn lock is held while it runs. It never applies to a relaunch, whose go.mod
+# and module cache the worker controls: a planted toolchain there would run
+# outside the fence. The download pins GOTOOLCHAIN=local, the Go proxy with no
+# direct fallback, and an empty GOFLAGS; the 90-second bound keeps a stalled
+# proxy from holding the launch, and any failure only warns: the worker still
+# launches and a missing module fails inside the fence as before.
+claude_sandbox_go_mod_download_command() {  # <worktree> <gocache-dir>
+  local wt=$1 gocache=$2 timeout_cmd=
+  [ -f "$wt/go.mod" ] || [ -f "$wt/go.work" ] || return 0
+  if ! command -v go >/dev/null 2>&1; then
+    echo "warning: $wt holds a root go.mod or go.work but go is not on PATH; the sandboxed worker starts with an empty module cache and cannot download modules inside the fence" >&2
+    return 0
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout_cmd=timeout
+  elif command -v gtimeout >/dev/null 2>&1; then
+    timeout_cmd=gtimeout
+  else
+    echo "warning: no timeout command on PATH; skipping the sandboxed worker's module download in $wt, so modules it needs cannot download inside the fence" >&2
+    return 0
+  fi
+  printf '%s' "(cd $(shell_quote "$wt") && env GOTOOLCHAIN=local GOPROXY=https://proxy.golang.org GOFLAGS= GOMODCACHE=$(shell_quote "$gocache/mod") GOCACHE=$(shell_quote "$gocache/build") $timeout_cmd 90 go mod download </dev/null) || echo 'warning: go mod download for the sandboxed worker failed or timed out; launching anyway, and modules it did not fetch cannot download inside the fence' >&2; "
 }
 
 resolved_existing_dir() {
@@ -3242,7 +3288,7 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
       printf '\n' &&
       cat "$SOURCE_BRIEF" &&
       if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
-        fm_brief_intent_overlay "$CAPTAIN_INTENT"
+        fm_brief_intent_overlay "$CAPTAIN_INTENT" "$CLAUDE_SANDBOX_ACTIVE"
       fi &&
       if [ "$KIND" = scout ] && [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
         fm_brief_sandbox_scout_overlay "$DATA" "$ID"
@@ -5412,6 +5458,7 @@ fi
 # The sandboxed worker's Go caches (claude_sandbox_settings above) ride the
 # launch command as an export, so they survive a filtered launch environment too.
 if [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
+  [ "$RELAUNCH" -eq 1 ] || LAUNCH="$(claude_sandbox_go_mod_download_command "$WT" "$STATE_REAL/$ID.gocache")$LAUNCH"
   LAUNCH="export GOCACHE=$(shell_quote "$STATE_REAL/$ID.gocache/build") GOMODCACHE=$(shell_quote "$STATE_REAL/$ID.gocache/mod"); $LAUNCH"
 fi
 if [ "$KEEP_AI_TRAILERS" = 0 ]; then

@@ -217,11 +217,19 @@ fm_brief_marked_captain_words() {  # <task-body>
   '
 }
 
-fm_brief_intent_overlay() {  # <captain-intent>
+fm_brief_intent_overlay() {  # <captain-intent> [<sandboxed: 1>]
+  [ "${2:-0}" != 1 ] || fm_brief_sandbox_no_mistakes_overlay
   cat <<'EOF'
 
 # Current no-mistakes intent contract
 This section supersedes every earlier brief instruction about constructing `--intent`, but not later clarifications actually supplied by the captain.
+EOF
+  if [ "${2:-0}" = 1 ]; then
+    cat <<'EOF'
+It does not supersede `# No-mistakes commands under the Claude sandbox` above: that section still governs how your command spells the words this section selects.
+EOF
+  fi
+  cat <<'EOF'
 Use everything under `## Captain intent authorized for --intent` through the end of this brief, including any nested subheadings but excluding that heading, plus any later words the captain actually supplied as `--intent`; never include Firstmate specification or other mixed Task content.
 Preserve those words without adding speaker labels or direct address.
 Firstmate-authored constraints, acceptance criteria, implementation details, decisions, and tradeoffs are specification, not captain intent.
@@ -245,6 +253,29 @@ This section supersedes the Definition of done's instruction to pass the captain
 Still read `captain-hold-lifecycle` for what counts as a captain question, then inventory every unresolved one your report or any visual review raised.
 EOF
   printf "Before reporting done, end \`%s/%s/report.md\` with a \`## Captain questions\` section that lists each such question with its options, or states that there are none; firstmate reads that section to hold them for the captain.\n" "$1" "$2"
+}
+
+# A no-mistakes ship running inside the Claude sandbox reaches the daemon only
+# through the fence's `no-mistakes *` exclusion, which Claude Code (verified
+# 2.1.283, Linux) stops matching - so the command runs fenced and the daemon
+# socket is refused - whenever the command text holds a backtick, `$(`, `<(`, or
+# `$'`, even inside single quotes, or chains the command after another; literal
+# newlines still match. no-mistakes takes its free text (`--intent`,
+# `--instructions`) only as arguments, so this section spells each one as a
+# plain single-quoted argument with each backtick written as a plain quote.
+# fm_brief_intent_overlay emits it in a sandboxed launch brief just ahead of its
+# own contract, which exempts it from that contract's supersession while the
+# authorized intent still runs to the end of the brief; bin/fm-promote.sh
+# appends it to a sandboxed Claude scout's no-mistakes ship instructions.
+fm_brief_sandbox_no_mistakes_overlay() {
+  cat <<'EOF'
+
+# No-mistakes commands under the Claude sandbox
+This ship runs inside the Claude sandbox, which lets `no-mistakes` reach its daemon socket only when the whole Bash command matches its `no-mistakes *` exclusion.
+The exclusion stops matching, so the command runs inside the fence and fails on the daemon socket, when the command text contains a backtick, `$(`, `<(`, or `$'` anywhere, even inside single quotes, or when the command is chained after another command or carries an environment prefix.
+So run every `no-mistakes` command, including `no-mistakes axi run` and `no-mistakes axi respond`, as one standalone command, and pass each free-text argument, such as `--intent` or `--instructions`, as one plain single-quoted argument: keep its words and line breaks as they are (literal newlines are fine), write each backtick as a plain `"`, write each `'` as `'\''`, and put a space after the `$` or `<` of any `$(`, `<(`, or `$'` the text itself contains.
+Never pass such text through `$'...'`, `$(...)`, `<(...)`, or a heredoc substitution.
+EOF
 }
 
 # Accept the current two-subsection contract only when both bodies have content;

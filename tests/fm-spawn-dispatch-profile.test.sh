@@ -44,6 +44,7 @@ make_spawn_fakebin() {
   fakebin=$(fm_test_make_spawn_fakebin "$dir")
   cat > "$fakebin/timeout" <<'SH'
 #!/usr/bin/env bash
+[ "${1:-}" != -k ] || shift 2
 shift
 exec "$@"
 SH
@@ -1907,11 +1908,15 @@ test_claude_sandbox_off_matches_absent_launch() {
   launch=$(cat "$LAUNCH_LOG")
   expected=$(claude_expected_launch "$launch" "$HOME_DIR" "$id" --dangerously-skip-permissions)
   [ "$launch" = "$expected" ] || fail "claude-sandbox=off changed the launch"$'\n'"expected: $expected"$'\n'"actual:   $launch"
+  assert_no_grep "# No-mistakes commands under the Claude sandbox" "$HOME_DIR/data/$id/launch-brief.md" \
+    "an unsandboxed ship's launch brief carried the sandbox no-mistakes spelling section"
+  assert_no_grep "It does not supersede" "$HOME_DIR/data/$id/launch-brief.md" \
+    "an unsandboxed ship's intent contract exempted a sandbox section it does not carry"
   pass "config/claude-sandbox=off launches exactly as an absent file does"
 }
 
 test_claude_sandbox_on_fences_ship_and_scout_launches() {
-  local kind rec id out status launch settings state_real data_real tmp_real root_real want dir granted clone pane_log
+  local kind rec id out status launch settings state_real data_real tmp_real root_real want dir granted clone pane_log sandbox_line intent_line contract_line exempt_line
   for kind in ship scout; do
     id="sandbox-on-$kind-z25"
     rec=$(make_spawn_case "sandbox-on-$kind" claude "$id")
@@ -1992,10 +1997,208 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
     else
       assert_no_grep "# Captain questions under the Claude sandbox" "$HOME_DIR/data/$id/launch-brief.md" \
         "a sandboxed ship's launch brief carried the scout completion overlay"
+      # Claude Code's no-mistakes exclusion stops matching on a backtick, `$(`,
+      # `<(`, or `$'` anywhere in the command, so a sandboxed no-mistakes ship
+      # learns to pass every no-mistakes free-text argument as one plain
+      # single-quoted argument.
+      assert_grep "# No-mistakes commands under the Claude sandbox" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed no-mistakes ship's launch brief did not say how to spell no-mistakes commands through the fence's exclusion"
+      assert_grep "including \`no-mistakes axi run\` and \`no-mistakes axi respond\`, as one standalone command" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed ship's launch brief did not cover every no-mistakes command"
+      assert_grep "such as \`--intent\` or \`--instructions\`, as one plain single-quoted argument" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed ship's launch brief did not ask for single-quoted free-text arguments"
+      assert_grep "write each backtick as a plain \`\"\`" "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed ship's launch brief did not replace the backticks that break the exclusion"
+      assert_grep "Never pass such text through \`\$'...'\`, \`\$(...)\`, \`<(...)\`, or a heredoc substitution." "$HOME_DIR/data/$id/launch-brief.md" \
+        "a sandboxed ship's launch brief did not rule out the spellings the exclusion refuses"
+      # The intent contract supersedes every earlier instruction about
+      # constructing --intent and authorizes everything to the end of the brief,
+      # so the sandbox section precedes the contract, which exempts it before the
+      # authorized intent begins.
+      sandbox_line=$(grep -n -x "# No-mistakes commands under the Claude sandbox" "$HOME_DIR/data/$id/launch-brief.md" | cut -d: -f1)
+      contract_line=$(grep -n -x "# Current no-mistakes intent contract" "$HOME_DIR/data/$id/launch-brief.md" | cut -d: -f1)
+      exempt_line=$(grep -n -x -F "It does not supersede \`# No-mistakes commands under the Claude sandbox\` above: that section still governs how your command spells the words this section selects." "$HOME_DIR/data/$id/launch-brief.md" | cut -d: -f1)
+      intent_line=$(grep -n -x "## Captain intent authorized for --intent" "$HOME_DIR/data/$id/launch-brief.md" | cut -d: -f1)
+      [ -n "$sandbox_line" ] && [ -n "$contract_line" ] && [ -n "$exempt_line" ] && [ -n "$intent_line" ] \
+        && [ "$sandbox_line" -lt "$contract_line" ] && [ "$contract_line" -lt "$exempt_line" ] && [ "$exempt_line" -lt "$intent_line" ] \
+        || fail "a sandboxed ship's intent contract did not exempt the preceding sandbox spelling section before the authorized captain intent"
     fi
     rm -rf -- "/tmp/fm-$id"
   done
   pass "config/claude-sandbox=on fences claude ship and scout launches with exactly the task grant"
+}
+
+# The fence refuses the host the Go proxy redirects module zips to, so a
+# fresh sandboxed spawn of a worktree with a root go.mod or go.work has its pane
+# launch command run `go mod download` outside the fence into the task's own
+# module cache with a pinned environment, before claude starts; a failure warns
+# without blocking the launch, and a relaunch, a non-Go or an unsandboxed
+# worktree never runs go. The fake records the environment and whether claude
+# had launched when the download ran.
+fake_go_for_sandbox() {  # <fakebin>
+  cat > "$1/go" <<'EOF'
+#!/usr/bin/env bash
+launch=unsent
+[ ! -e "${FM_TEST_CLAUDE_MARK:-}" ] || launch=sent
+printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$(pwd -P)" "$*" "${GOMODCACHE-}" "${GOCACHE-}" "${GOTOOLCHAIN-}" "${GOPROXY-}" "${GOFLAGS-unset}" "$launch" >> "$FM_TEST_GO_LOG"
+if [ "${FM_TEST_GO_STATUS:-0}" != 0 ]; then
+  echo "go: example.com/missing@v1.0.0: fake download failure" >&2
+  exit "$FM_TEST_GO_STATUS"
+fi
+EOF
+  chmod +x "$1/go"
+  # shellcheck disable=SC2016 # the fake claude expands FM_TEST_CLAUDE_MARK at its own run time
+  printf '#!/usr/bin/env bash\n: > "$FM_TEST_CLAUDE_MARK"\n' > "$1/claude"
+  chmod +x "$1/claude"
+}
+
+# The pane runs the emitted launch command; replay it with the fake go and a
+# fake claude, in the worker's ambient environment (a hostile GOTOOLCHAIN and
+# GOFLAGS the download must override).
+replay_sandbox_launch() {
+  rm -f "$CASE_DIR/claude.mark"
+  out=$(cd "$GO_WT" && FM_TEST_GO_LOG="$GO_LOG" FM_TEST_GO_STATUS="${FM_TEST_GO_STATUS:-0}" \
+    FM_TEST_CLAUDE_MARK="$CASE_DIR/claude.mark" GOTOOLCHAIN=auto GOFLAGS=-mod=mod \
+    PATH="$FAKEBIN_DIR:$PATH" sh -c "$(cat "$LAUNCH_LOG")" 2>&1)
+  status=$?
+}
+
+sandbox_go_setup() {  # <name> <id> <sandbox> <root file: go.mod|go.work|none>
+  local name=$1 id=$2 sandbox_mode=$3 root_file=$4 rec
+  rec=$(make_spawn_case "$name" claude "$id")
+  read_case_record "$rec"
+  printf '%s\n' "$sandbox_mode" > "$HOME_DIR/config/claude-sandbox"
+  printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
+  # The spawn resets a clean pooled worktree to origin's default branch, so the
+  # root file reaches the worktree through a commit on origin, as a project's
+  # own go.mod or go.work does.
+  case "$root_file" in
+  go.mod) printf 'module example.com/sandboxed\n\ngo 1.22\n' > "$PROJ_DIR/go.mod" ;;
+  go.work) printf 'go 1.22\n\nuse ./server\n' > "$PROJ_DIR/go.work" ;;
+  esac
+  if [ "$root_file" != none ]; then
+    if ! { git -C "$PROJ_DIR" add "$root_file" &&
+      git -C "$PROJ_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm "add $root_file" &&
+      git -C "$PROJ_DIR" push -q origin main; }; then
+      fail "could not publish $root_file to the fixture's origin"
+    fi
+  fi
+  fake_go_for_sandbox "$FAKEBIN_DIR"
+  GO_LOG="$CASE_DIR/go.log"
+  # A sandboxed Claude worker runs in its own task clone, not the pooled worktree.
+  GO_WT=$WT_DIR
+  [ "$sandbox_mode" != on ] || GO_WT=$(task_clone_path "$id")
+}
+
+sandbox_go_spawn() {  # <id> <go-status>
+  local id=$1 go_status=$2
+  out=$(run_ship_spawn "$HOME_DIR" "$GO_WT" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  rm -rf -- "/tmp/fm-$id"
+}
+
+sandbox_go_case() {  # <name> <id> <sandbox> <root file: go.mod|go.work|none> <go-status>
+  sandbox_go_setup "$1" "$2" "$3" "$4"
+  sandbox_go_spawn "$2" "$5"
+}
+
+test_claude_sandbox_downloads_go_modules_at_spawn() {
+  local out status state_real wt_real
+  sandbox_go_case sandbox-go-ok sandbox-go-ok-z40 on go.mod 0
+  expect_code 0 "$status" "sandboxed Go module spawn should succeed"$'\n'"$out"
+  state_real=$(cd "$HOME_DIR/state" && pwd -P)
+  wt_real=$(cd "$GO_WT" && pwd -P)
+  [ ! -e "$GO_LOG" ] || fail "the spawn itself ran go mod download instead of the pane's launch command"
+  replay_sandbox_launch
+  expect_code 0 "$status" "the sandboxed Go launch command should run"$'\n'"$out"
+  [ -s "$GO_LOG" ] || fail "a sandboxed spawn of a Go module worktree did not download its modules"
+  [ -e "$CASE_DIR/claude.mark" ] || fail "the launch command never reached claude"
+  [ "$(cat "$GO_LOG")" = "$wt_real|mod download|$state_real/sandbox-go-ok-z40.gocache/mod|$state_real/sandbox-go-ok-z40.gocache/build|local|https://proxy.golang.org||unsent" ] \
+    || fail "go mod download did not run in the worktree with the task's own caches with a pinned environment before claude starts"$'\n'"$(cat "$GO_LOG")"
+  [ -s "$LAUNCH_LOG" ] || fail "the sandboxed Go module worker did not launch"
+
+  # A relaunch's go.mod and module cache are worker-controlled, so it never
+  # downloads.
+  rm -f "$GO_LOG"
+  mkdir -p "$CASE_DIR/idle-pane"
+  cat > "$CASE_DIR/idle-pane/tmux" <<'SH'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in
+    *pane_current_command*) printf 'zsh\n'; exit 0 ;;
+  esac
+done
+exec "$FM_TEST_REAL_TMUX" "$@"
+SH
+  chmod +x "$CASE_DIR/idle-pane/tmux"
+  out=$(FM_TEST_REAL_TMUX="$FAKEBIN_DIR/tmux" FM_FAKE_DUPLICATE_WINDOW=fm-sandbox-go-ok-z40 run_spawn "$HOME_DIR" "$GO_WT" "$CASE_DIR/idle-pane:$FAKEBIN_DIR" "$LAUNCH_LOG" --relaunch sandbox-go-ok-z40)
+  status=$?
+  expect_code 0 "$status" "relaunching a sandboxed Go module task should succeed"$'\n'"$out"
+  [ -s "$LAUNCH_LOG" ] || fail "the relaunched sandboxed Go module worker did not launch"
+  replay_sandbox_launch
+  expect_code 0 "$status" "the relaunched Go launch command should run"$'\n'"$out"
+  [ -e "$CASE_DIR/claude.mark" ] || fail "the relaunch command never reached claude"
+  [ ! -e "$GO_LOG" ] || fail "a relaunch ran go mod download"$'\n'"$(cat "$GO_LOG")"
+
+  # Workspace mode reaches every module the workspace uses, so a root go.work
+  # without a root go.mod still downloads.
+  sandbox_go_case sandbox-go-work sandbox-go-work-z41 on go.work 0
+  expect_code 0 "$status" "sandboxed Go workspace spawn should succeed"$'\n'"$out"
+  wt_real=$(cd "$GO_WT" && pwd -P)
+  replay_sandbox_launch
+  [ "$(cut -d'|' -f1,2 "$GO_LOG")" = "$wt_real|mod download" ] \
+    || fail "a sandboxed spawn of a Go workspace worktree did not download its modules"$'\n'"$(cat "$GO_LOG" 2>/dev/null)"
+
+  sandbox_go_case sandbox-go-fail sandbox-go-fail-z43 on go.mod 1
+  expect_code 0 "$status" "a failed module download must not block the sandboxed spawn"$'\n'"$out"
+  FM_TEST_GO_STATUS=1 replay_sandbox_launch
+  expect_code 0 "$status" "a failed module download must not stop the launch command"$'\n'"$out"
+  [ -e "$CASE_DIR/claude.mark" ] || fail "the launch command did not reach claude after a failed module download"
+  assert_contains "$out" "warning: go mod download for the sandboxed worker" "a failed module download did not warn"
+  assert_contains "$out" "fake download failure" "the download warning did not show go's error"
+  [ -s "$LAUNCH_LOG" ] || fail "the worker did not launch after a failed module download"
+
+  sandbox_go_case sandbox-go-none sandbox-go-none-z44 on none 0
+  expect_code 0 "$status" "sandboxed non-Go spawn should succeed"$'\n'"$out"
+  replay_sandbox_launch
+  [ ! -e "$GO_LOG" ] || fail "a sandboxed spawn of a non-Go worktree ran go"$'\n'"$(cat "$GO_LOG")"
+
+  sandbox_go_case sandbox-go-off sandbox-go-off-z45 off go.mod 0
+  expect_code 0 "$status" "unsandboxed Go module spawn should succeed"$'\n'"$out"
+  replay_sandbox_launch
+  [ ! -e "$GO_LOG" ] || fail "an unsandboxed spawn ran go mod download"$'\n'"$(cat "$GO_LOG")"
+  pass "config/claude-sandbox=on downloads a Go worktree's modules into the task cache from the launch command, before claude starts"
+}
+
+# No teardown ever reaches the task cache of a spawn that fails before its
+# worker launches and rolls its task record back, so the spawn removes it
+# itself. A world-writable launch directory fails the spawn before the launch
+# is sent.
+test_claude_sandbox_failed_spawn_removes_its_module_cache() {
+  local id=sandbox-go-abort-z46 out status home_real token launch_dir
+  sandbox_go_setup sandbox-go-abort "$id" on go.mod
+  home_real=$(cd "$HOME_DIR" && pwd -P)
+  if command -v shasum >/dev/null 2>&1; then
+    token=$(printf '%s' "$home_real" | shasum -a 256 | awk '{print $1}')
+  else
+    token=$(printf '%s' "$home_real" | sha256sum | awk '{print $1}')
+  fi
+  launch_dir="/tmp/fm-$id+$token"
+  rm -rf -- "$launch_dir"
+  if ! { mkdir -p "$launch_dir" && chmod 777 "$launch_dir"; }; then
+    fail "could not plant the refused launch directory"
+  fi
+  sandbox_go_spawn "$id" 0
+  rm -rf -- "$launch_dir"
+  [ "$status" -ne 0 ] || fail "a spawn whose launch directory is refused should fail"$'\n'"$out"
+  assert_contains "$out" "task launch directory $launch_dir already exists" \
+    "the spawn did not fail where the test expects"
+  assert_absent "$HOME_DIR/state/$id.meta" "the failed spawn left its task record behind"
+  if [ -e "$HOME_DIR/state/$id.gocache" ]; then
+    chmod -R u+w "$HOME_DIR/state/$id.gocache"
+    fail "a spawn that failed without a surviving task record left its task cache behind"
+  fi
+  pass "config/claude-sandbox=on removes a failed spawn's module cache when no task record survives"
 }
 
 # A loaded project .claude/settings.json would run its hooks outside the fence
@@ -2247,6 +2450,8 @@ test_non_claude_harness_ignores_claude_permission_mode
 test_claude_sandbox_off_matches_absent_launch
 test_claude_sandbox_off_keeps_the_scout_completion_gate
 test_claude_sandbox_on_fences_ship_and_scout_launches
+test_claude_sandbox_downloads_go_modules_at_spawn
+test_claude_sandbox_failed_spawn_removes_its_module_cache
 test_claude_sandbox_drops_committed_project_settings
 test_claude_sandbox_invalid_refuses_before_endpoint_or_metadata
 test_claude_sandbox_refuses_without_auto_permission_mode

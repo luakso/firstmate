@@ -457,6 +457,45 @@ test_promotion_branch_command_is_shell_safe() {
   pass "fm-promote: ref-format-valid shell metacharacters stay literal in promotion branch commands"
 }
 
+# A Claude scout launched inside the sandbox keeps running there after
+# promotion, so its no-mistakes ship instructions end with the fence's
+# no-mistakes command spelling; brief.md never carries it, because a relaunch
+# through fm-spawn.sh adds it whenever that launch is sandboxed.
+test_promotion_of_a_sandboxed_claude_scout_spells_no_mistakes_commands() {
+  local home id harness sandbox mode want instructions
+  home="$TMP_ROOT/promote-sandbox/home"
+  mkdir -p "$home/state" "$home/config"
+  while read -r id harness sandbox mode want; do
+    printf '%s\n' "$sandbox" > "$home/config/claude-sandbox"
+    printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\nharness=%s\n' "$id" "$harness" > "$home/state/$id.meta"
+    FM_HOME="$home" "$BRIEF" "$id" fixture-project --scout </dev/null >/dev/null 2>&1 \
+      || fail "sandbox promotion scout brief $id should scaffold"
+    fill_brief_subsections "$home/data/$id/brief.md" \
+      "Ship the sandboxed fixture." "Keep the fixture small."
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" \
+      --mode "$mode" --yolo off </dev/null >/dev/null 2>&1 \
+      || fail "promotion of $id should succeed"
+    instructions="$home/data/$id/ship-instructions.md"
+    if [ "$want" = yes ]; then
+      [ "$(grep '^# ' "$instructions" | tail -n 1)" = "# No-mistakes commands under the Claude sandbox" ] \
+        || fail "a sandboxed Claude scout promoted to no-mistakes did not end its ship instructions with the no-mistakes spelling section"
+      assert_grep "including \`no-mistakes axi run\` and \`no-mistakes axi respond\`, as one standalone command" "$instructions" \
+        "the promoted sandboxed ship's instructions did not cover every no-mistakes command"
+    else
+      assert_no_grep "# No-mistakes commands under the Claude sandbox" "$instructions" \
+        "promotion of $id ($harness, sandbox $sandbox, $mode) carried the sandbox no-mistakes spelling section"
+    fi
+    assert_no_grep "# No-mistakes commands under the Claude sandbox" "$home/data/$id/brief.md" \
+      "promotion of $id wrote the sandbox spelling section into the brief a relaunch renders"
+  done <<'EOF'
+promote-sandbox-nm-e1 claude on no-mistakes yes
+promote-sandbox-codex-e2 codex on no-mistakes no
+promote-sandbox-off-e3 claude off no-mistakes no
+promote-sandbox-pr-e4 claude on direct-PR no
+EOF
+  pass "fm-promote: a sandboxed Claude scout promoted to no-mistakes learns the fence's no-mistakes spelling"
+}
+
 test_local_merge_uses_the_recorded_ship_branch() {
   local home proj id main fix out
   home="$TMP_ROOT/local-merge-branch/home"
@@ -1753,6 +1792,7 @@ test_promote_refuses_a_symlinked_task_record
 test_promotion_delivers_the_real_definition_of_done
 test_promotion_persists_the_selected_ship_branch
 test_promotion_branch_command_is_shell_safe
+test_promotion_of_a_sandboxed_claude_scout_spells_no_mistakes_commands
 test_local_merge_uses_the_recorded_ship_branch
 test_local_merge_imports_a_task_clone_branch
 test_project_mode_matches_whole_multiword_names
