@@ -3060,7 +3060,7 @@ claude_sandbox_go_mod_download_command() {  # <worktree> <gocache-dir>
 # applies to a relaunch, is bounded by a timeout, and only warns on any failure.
 # A worktree with no lockfile is left for the worker's own first install.
 claude_sandbox_js_install_command() {  # <worktree> <gocache-dir>
-  local wt=$1 gocache=$2 timeout_cmd= tool install_args
+  local wt=$1 gocache=$2 timeout_cmd='' tool install_args
   if [ -f "$wt/package-lock.json" ]; then
     tool=npm
     install_args="ci --ignore-scripts --no-audit --no-fund --registry https://registry.npmjs.org/ --cache $(shell_quote "$gocache/npm")"
