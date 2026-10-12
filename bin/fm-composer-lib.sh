@@ -755,11 +755,36 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
 _fm_composer_pi_separator_row() {  # <trimmed-row>
   local row=$1
   [ -n "$row" ] || return 1
-  [ -z "${row//─/}" ] || return 1
-  case "$row" in
-    *────────*) return 0 ;;
+  if [ -z "${row//─/}" ]; then
+    case "$row" in
+      *────────*) return 0 ;;
+    esac
+    return 1
+  fi
+  _fm_composer_titled_rule_row "$row"
+}
+
+# _fm_composer_titled_rule_row: a `─` rule with a TITLE embedded in it, the
+# shape claude 2.1.296 draws as its composer's top rule once the session has a
+# name (`──── Trawler deployment readiness ─`). It is the same separator as a
+# solid rule for pairing, so a composer under a titled top rule is the same
+# glyph-proven `─` pair real claude 2.x draws untitled. The test is positional
+# and byte-exact (literal prefix/suffix removal, never a bracket class, so it
+# cannot depend on the locale): at least two rule glyphs, a space, a non-blank
+# title, a space, and at least one more rule glyph, four or more glyphs in all.
+_fm_composer_titled_rule_row() {  # <trimmed-row>
+  local row=$1 rest lead=0 trail=0 title
+  rest=$row
+  while [ "${rest#─}" != "$rest" ]; do rest=${rest#─}; lead=$((lead + 1)); done
+  while [ "${rest%─}" != "$rest" ]; do rest=${rest%─}; trail=$((trail + 1)); done
+  [ "$lead" -ge 2 ] && [ "$trail" -ge 1 ] && [ $((lead + trail)) -ge 4 ] || return 1
+  case "$rest" in
+    ' '*' ') ;;
+    *) return 1 ;;
   esac
-  return 1
+  title=$rest
+  fm_composer_normalize_trim_var title
+  [ -n "$title" ]
 }
 
 # Row-scan results are returned through FM_COMPOSER_SCAN_* globals (bash 3.2
@@ -1613,6 +1638,44 @@ EOF
 }
 
 fm_composer_classify_screen() {  # <caps> <screen> [cursor_row] [identity]
+  local verdict
+  verdict=$(_fm_composer_classify_screen_shape "$@")
+  if [ "$verdict" = empty ] && _fm_composer_queued_hint_present "$2"; then
+    verdict=pending
+  fi
+  printf '%s' "$verdict"
+}
+
+# _fm_composer_queued_hint_present: 0 when one of the screen's last eight
+# non-blank rows is claude's queued-input hint (`Press up to edit queued
+# messages`, `Press up to select a queued message ...`; the strings of claude
+# 2.1.296's prompt-input footer). Claude shows it only while messages are
+# queued behind a busy turn, and a queued message is not in the composer row,
+# so the composer reads idle while input is in fact pending: delivering into
+# that pane would stack behind or collide with it. `empty` is the one verdict
+# that authorizes a caller to type, so this only ever moves a verdict toward
+# refusing (fm_composer_classify_screen demotes `empty` to `pending`). The row
+# must LEAD with the hint or with the permission-mode marker that shares its
+# footer line, so a transcript line that merely quotes the phrase never matches.
+_fm_composer_queued_hint_present() {  # <screen>
+  local row seen=0
+  while IFS= read -r row; do
+    fm_composer_normalize_trim_var row
+    [ -n "$row" ] || continue
+    case "$row" in
+      'Press up to edit queued messages'*|'Press up to select a queued message'*) return 0 ;;
+      ⏵*'Press up to edit queued messages'*|⏵*'Press up to select a queued message'*) return 0 ;;
+      ⏸*'Press up to edit queued messages'*|⏸*'Press up to select a queued message'*) return 0 ;;
+    esac
+    seen=$((seen + 1))
+    [ "$seen" -lt 8 ] || return 1
+  done <<EOF
+$(printf '%s\n' "$1" | fm_composer_strip_ansi | awk '{ rows[NR] = $0 } END { for (i = NR; i >= 1; i--) print rows[i] }')
+EOF
+  return 1
+}
+
+_fm_composer_classify_screen_shape() {  # <caps> <screen> [cursor_row] [identity]
   local caps=$1 screen=$2 cy=${3:-} identity=${4:-}
   local styled=0 cursor=0 has_identity=0 kv plain
   while IFS= read -r kv; do

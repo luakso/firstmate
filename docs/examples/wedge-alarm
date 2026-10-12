@@ -20,3 +20,8 @@
 # happens overnight reaches you even away from the machine.
 osascript
 command: curl -fsS -H "Title: firstmate wedge alarm" -d "$1" https://ntfy.sh/replace-with-your-topic
+#
+# Example: on Linux there is no built-in OS channel, so a desktop notification
+# is one command: line (needs libnotify's notify-send and a running notification
+# daemon in the daemon's session; add the ntfy line above to reach a phone).
+# command: notify-send -u critical "firstmate wedge alarm" "$1"

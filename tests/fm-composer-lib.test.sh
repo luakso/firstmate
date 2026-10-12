@@ -219,6 +219,68 @@ test_matrix_claude_arrow_statusline_footer() {
   pass "matrix: claude's arrow statusline is footer furniture, not a composer holding text"
 }
 
+test_matrix_claude_titled_top_rule() {
+  # Real claude 2.1.296 on herdr (captured live 2026-10-12): once the session
+  # has a name, the composer's top rule carries it (`──── <title> ─`), the
+  # composer row is `❯`+NBSP, the bottom rule is plain, and a two-row footer
+  # (a statusLine ending in `❯`, then the permission-mode hint) sits below.
+  # The titled rule was not a separator, so the plain bottom rule read as a
+  # lone stale separator and every idle read was `unknown`; the away-mode
+  # daemon deferred all of its escalations on that verdict for two sessions.
+  local top rule footer idle typed screen out claude_idle
+  claude_idle=$(printf 'claude\tidle')
+  top='──── Trawler deployment readiness ───────────────────────────────'
+  rule='────────────────────────────────────────────────────────────────'
+  footer=$'\n  Opus 5.5 firstmatemain ❯\n  ⏵⏵ auto mode on · ← for agents · 1 shell'
+  idle=$'transcript line\n'"$top"$'\n❯'"$NBSP"$'\n'"$rule$footer"
+  assert_screen "titled-top claude idle on herdr" empty "$CAPS_STYLED" "$idle" '' "$claude_idle"
+  assert_screen "titled-top claude idle on zellij" empty "$CAPS_STYLED_NOID" "$idle"
+  assert_screen "titled-top claude idle on cmux/orca" empty "$CAPS_PLAIN" "$idle"
+  assert_screen "titled-top claude idle on tmux" empty "$CAPS_TMUX" "$idle" 2 probe-absent
+  assert_screen "titled-top claude idle, mode hint only" empty "$CAPS_STYLED" \
+    $'transcript line\n'"$top"$'\n❯'"$NBSP"$'\n'"$rule"$'\n  ⏵⏵ auto mode on' '' "$claude_idle"
+  # The protection this must NOT remove: typed text under a titled rule.
+  typed=$'transcript line\n'"$top"$'\n❯ fix the login bug\n'"$rule$footer"
+  assert_screen "titled-top claude typed on herdr" pending "$CAPS_STYLED" "$typed" '' "$claude_idle"
+  assert_screen "titled-top claude typed on tmux" pending "$CAPS_TMUX" "$typed" 2 probe-absent
+  assert_screen "titled-top claude typed on plain backends" unknown "$CAPS_PLAIN" "$typed"
+  # A modal dialog under a titled rule is not an empty composer, exactly as
+  # under a plain rule.
+  screen=$'transcript line\n'"$top"$'\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n'"$rule"
+  assert_screen "titled-top modal dialog" pending "$CAPS_STYLED" "$screen" '' "$claude_idle"
+  # A bare shell prompt after the titled rule is still a dead shell.
+  screen=$'transcript line\n'"$top"$'\nuser@host $'
+  out=$(fm_composer_classify_screen "$CAPS_STYLED" "$screen" '' "$claude_idle")
+  [ "$out" != empty ] || fail "a dead shell under a titled rule must not read empty, got '$out'"
+  pass "matrix: claude's titled top rule is a separator - idle reads empty, typed reads pending"
+}
+
+test_matrix_claude_queued_messages_hint() {
+  # claude shows `Press up to edit queued messages` in its footer while input
+  # is queued behind a busy turn. The composer row itself is empty, so the
+  # shape alone reads idle; the hint is the only proof that input is pending.
+  local top rule hint screen claude_idle
+  claude_idle=$(printf 'claude\tidle')
+  top='──── Trawler deployment readiness ───────────────────────────────'
+  rule='────────────────────────────────────────────────────────────────'
+  for hint in \
+    '  Press up to edit queued messages' \
+    '  Press up to select a queued message to edit, or Enter to send them now' \
+    '  ⏵⏵ auto mode on · Press up to edit queued messages'; do
+    screen=$'transcript line\n'"$top"$'\n❯'"$NBSP"$'\n'"$rule"$'\n'"$hint"
+    assert_screen "queued hint under a titled rule ($hint)" pending "$CAPS_STYLED" "$screen" '' "$claude_idle"
+    assert_screen "queued hint on tmux ($hint)" pending "$CAPS_TMUX" "$screen" 2 probe-absent
+    assert_screen "queued hint on cmux/orca ($hint)" pending "$CAPS_PLAIN" "$screen"
+    screen=$'transcript line\n'"$rule"$'\n❯'"$NBSP"$'\n'"$rule"$'\n'"$hint"
+    assert_screen "queued hint under a plain rule ($hint)" pending "$CAPS_STYLED" "$screen" '' "$claude_idle"
+  done
+  # Only a row that LEADS with the hint counts: transcript text quoting it
+  # must not wedge an idle pane.
+  screen=$'  ⎿  Press up to edit queued messages was the string\n'"$top"$'\n❯'"$NBSP"$'\n'"$rule"
+  assert_screen "a quoted hint is transcript, not a queue" empty "$CAPS_STYLED" "$screen" '' "$claude_idle"
+  pass "matrix: claude's queued-messages hint keeps an otherwise idle composer from reading empty"
+}
+
 test_composer_footer_demotion_needs_a_proven_pair() {
   # The demotion is bounded in three directions, and each bound is a case
   # where a lower glyph row IS the live composer.
@@ -969,6 +1031,8 @@ test_idle_placeholder_case_mode_is_explicit
 test_real_text_is_pending
 test_matrix_claude_bare_nbsp_row
 test_matrix_claude_arrow_statusline_footer
+test_matrix_claude_titled_top_rule
+test_matrix_claude_queued_messages_hint
 test_composer_footer_demotion_needs_a_proven_pair
 test_composer_footer_zone_is_shape_independent
 test_composer_footer_zone_refuses_rather_than_allows
