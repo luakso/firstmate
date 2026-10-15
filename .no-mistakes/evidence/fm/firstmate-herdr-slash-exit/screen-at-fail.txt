@@ -1,0 +1,16 @@
+CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings
+'{"feedbackDrafts":"off"}'
+
+01M4ZNPEVGD8PT0TVTM4JKATZS HEAD ? ❯ CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dang
+erously-skip-permissions --settings '{"feedbackDrafts":"off"}'
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Sonnet 5.5 · Claude Max
+ ▝▝   ▝▝   ~/.no-mistakes/worktrees/a368fa38960f/01M4ZNPEVGD8PT0TVTM4JKATZS
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⚠ Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker · restart with CLAUDE_CODE_FORCE_SESSION_PE…
+  Sonnet 5.5 01M4ZNPEVGD8PT0TVTM4JKATZS? ❯
+  ⏵⏵ auto mode on (shift+tab to cycle)
