@@ -329,6 +329,36 @@ test_matrix_claude_auto_mode_pane_busy_turn() {
   pass "matrix: the busy auto-mode pane reads empty idle, exact typed text, and pending-with-empty-content when a message is queued"
 }
 
+test_matrix_claude_slash_command_menu_capture() {
+  # The pane Firstmate captured live on 2026-10-15 (Claude Code 2.1.296 on
+  # herdr, tests/captures/claude-2.1.296): typing a slash command opens a menu
+  # under the composer whose highlighted first entry leads with the composer's
+  # own glyph and repeats the typed command. The menu is not composer content,
+  # and the typed command alone is.
+  local screen content caps_plain caps_styled other
+  screen=$(cat "$ROOT/tests/captures/claude-2.1.296/slash-exit-menu.txt")
+  caps_plain=$(printf 'styled=0\ncursor=0\nidentity=0')
+  caps_styled=$(printf 'styled=1\ncursor=0\nidentity=0')
+  content=$(fm_composer_extract_selected_content "$caps_plain" "$screen")
+  [ "$content" = '/exit' ] || fail "the slash menu must not read as composer text, got '$content'"
+  content=$(LC_ALL=C fm_composer_extract_selected_content "$caps_styled" "$screen")
+  [ "$content" = '/exit' ] || fail "the slash menu must not read as composer text under LC_ALL=C, got '$content'"
+  assert_screen "typed /exit above its command menu" pending "$CAPS_STYLED" "$screen" '' "$(printf 'claude\tidle')"
+
+  # A shorter typed prefix still highlights the command it completes to.
+  other=$(printf '%s\n' "$screen" | sed '4s|/exit|/ex|')
+  content=$(fm_composer_extract_selected_content "$caps_plain" "$other")
+  [ "$content" = '/ex' ] || fail "a typed prefix above its menu should extract '/ex', got '$content'"
+
+  # A highlighted entry that does not extend the typed command is not this
+  # menu's shape, so the lower glyph row stays a live composer and the
+  # composer above it is not claimed.
+  other=$(printf '%s\n' "$screen" | sed '6s|/exit|/quit|')
+  content=$(fm_composer_extract_selected_content "$caps_plain" "$other")
+  [ "$content" != '/exit' ] || fail "a menu entry that does not extend the typed command must not be treated as its menu"
+  pass "matrix: the captured slash-command menu reads as the typed command, never as composer text"
+}
+
 test_composer_footer_demotion_needs_a_proven_pair() {
   # The demotion is bounded in three directions, and each bound is a case
   # where a lower glyph row IS the live composer.
@@ -1082,6 +1112,7 @@ test_matrix_claude_arrow_statusline_footer
 test_matrix_claude_titled_top_rule
 test_matrix_claude_queued_messages_hint
 test_matrix_claude_auto_mode_pane_busy_turn
+test_matrix_claude_slash_command_menu_capture
 test_composer_footer_demotion_needs_a_proven_pair
 test_composer_footer_zone_is_shape_independent
 test_composer_footer_zone_refuses_rather_than_allows

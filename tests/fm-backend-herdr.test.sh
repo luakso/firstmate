@@ -5113,6 +5113,32 @@ test_send_text_submit_claude_proof_waits_for_a_late_render() {
   pass "fm_backend_herdr_send_text_submit: a Claude payload that renders late is waited for, proven, and submitted without a clear"
 }
 
+# Claude 2.1.296 opens a command menu under the composer when a slash command
+# is typed, and the menu renders a few seconds after the typed text. The
+# fixture is the pane Firstmate captured on 2026-10-15: the composer holds
+# `/exit` and the menu's highlighted first entry repeats it. The proof read the
+# menu as the composer, saw a stable non-payload, and refused fm-control exit.
+test_send_text_submit_claude_slash_menu_is_proven_after_a_late_render() {
+  local dir log resp fb out enter_count text n
+  dir="$TMP_ROOT/submit-claude-slash-menu"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  text='/exit'
+  herdr_submit_claude_prefix "$resp" "$text"
+  herdr_auto_mode_screen '❯ ' > "$resp/2.out"
+  for n in 4 5; do herdr_auto_mode_screen '❯ ' > "$resp/$n.out"; done
+  cp "$ROOT/tests/captures/claude-2.1.296/slash-exit-menu.txt" "$resp/6.out"
+  printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/7.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/9.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    FM_BACKEND_HERDR_PROOF_POLLS=6 FM_BACKEND_HERDR_PROOF_INTERVAL=0.01 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 3 0.01 0.01' "$ROOT" "$text" )
+  [ "$out" = empty ] || fail "a /exit shown above its command menu must be proven and submitted, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "the slash command should be submitted once, sent $enter_count Enter(s)"
+  [ "$(herdr_ctrl_u_count "$log")" -eq 0 ] || fail "a slash command shown above its menu must not be cleared"
+  pass "fm_backend_herdr_send_text_submit: a slash command above its Claude command menu is proven after a late render and submitted"
+}
+
 test_send_text_submit_claude_proof_refusal_is_bounded_and_explained() {
   local dir log resp fb out err enter_count text n
   dir="$TMP_ROOT/submit-claude-never-renders"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -6133,6 +6159,7 @@ test_send_text_submit_refuses_marked_digest_missing_its_head
 test_composer_state_claude_slash_popup_pushes_composer_above_tail_window
 test_send_text_submit_claude_slash_popup_composer_is_still_proven_and_submitted
 test_send_text_submit_claude_proof_waits_for_a_late_render
+test_send_text_submit_claude_slash_menu_is_proven_after_a_late_render
 test_send_text_submit_claude_proof_refusal_is_bounded_and_explained
 test_send_text_submit_claude_proof_refuses_a_stable_suffix_without_waiting_it_out
 test_send_text_submit_claude_proof_does_not_mistake_growth_for_a_stable_suffix
