@@ -551,6 +551,13 @@ Dated measurement: docs/verification/runtime-backends.md "Claude exit behind the
 That comparison ignores whitespace and U+2063, the invisible mark that starts operational inputs and ends the from-firstmate label.
 It ignores U+2063 because Claude's Herdr read-back never shows it.
 
+The proof is a bounded poll, not one read after the settle.
+A pane on a loaded host renders a typed burst late or in pieces, and a single early read judged that payload unsent and cleared it.
+The adapter re-reads every `FM_BACKEND_HERDR_PROOF_INTERVAL` seconds (0.5) for up to `FM_BACKEND_HERDR_PROOF_POLLS` reads (10).
+An empty or unreadable composer keeps waiting, and a composer that is still changing is not refused.
+A composer that settles on the same non-payload text for `FM_BACKEND_HERDR_PROOF_STABLE` consecutive reads (3) is refused at once, because waiting cannot repair a truncated payload.
+Every refusal writes its reason, and an excerpt of what the composer held, to stderr.
+
 A composer that holds a shorter suffix, or a placeholder plus a literal remainder, does not receive Enter.
 Instead:
 
@@ -578,6 +585,12 @@ That fallback adds a pre-Enter rendered-footer transition when the baseline is u
 A fully unreadable target stops retrying and reports unknown.
 
 `blocked` is not treated as a queued-Enter busy signal, so a Cursor pane that reports blocked in every state does not receive that conversion.
+
+Claude never receives that conversion while its composer still shows the payload.
+Claude moves a message it queues behind a busy turn out of the composer, and the shared classifier reads its queued-messages footer hint as pending.
+A pending verdict with an empty composer is therefore a delivered, queued Enter.
+A pending verdict with the payload still in the composer is a swallowed Enter, reported `pending` however busy the pane is, and it also voids a busy-footer transition as proof.
+`bin/fm-task-inbox-lib.sh` then presses Enter again on a doorbell that stayed in the composer, twice at most.
 
 ### Harnesses with no idle baseline
 

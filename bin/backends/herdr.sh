@@ -3412,6 +3412,69 @@ fm_backend_herdr_composer_payload_shown() {  # <text> <after>
   [ -z "$literal" ]
 }
 
+# fm_backend_herdr_composer_proof: poll the selected composer until it shows
+# <text> (0), or until the read can no longer improve (1). One read at a fixed
+# settle was a race against the harness, not a proof: a Claude pane on a loaded
+# host renders a typed burst late or in pieces, so the single read saw an empty
+# or partial composer, judged the payload unsent, and Ctrl+U-cleared a message
+# that was still arriving (fm-control exit refused as "could not be sent", and a
+# doorbell left half-typed). The caller has already slept its settle; this
+# re-reads every FM_BACKEND_HERDR_PROOF_INTERVAL seconds for up to
+# FM_BACKEND_HERDR_PROOF_POLLS reads. An empty or unreadable composer keeps
+# waiting for the render. A non-empty composer that is not the payload is
+# refused as soon as FM_BACKEND_HERDR_PROOF_STABLE consecutive reads agree on
+# it: that is the verified head-truncation shape (a suffix, or a placeholder
+# plus a literal remainder), which waiting cannot repair, and a render still in
+# progress changes between reads instead. A value of 1 for POLLS reproduces the
+# old single read exactly. The last read is left in
+# FM_BACKEND_HERDR_PROOF_CONTENT and the read count in FM_BACKEND_HERDR_PROOF_READS
+# for the refusal note.
+FM_BACKEND_HERDR_PROOF_POLLS=${FM_BACKEND_HERDR_PROOF_POLLS:-10}
+FM_BACKEND_HERDR_PROOF_INTERVAL=${FM_BACKEND_HERDR_PROOF_INTERVAL:-0.5}
+FM_BACKEND_HERDR_PROOF_STABLE=${FM_BACKEND_HERDR_PROOF_STABLE:-3}
+FM_BACKEND_HERDR_PROOF_CONTENT=
+FM_BACKEND_HERDR_PROOF_READS=0
+fm_backend_herdr_composer_proof() {  # <target> <text>
+  local target=$1 text=$2 polls=$FM_BACKEND_HERDR_PROOF_POLLS stable=$FM_BACKEND_HERDR_PROOF_STABLE
+  local content prev='' same=0 reads=0
+  case "$polls" in ''|*[!0-9]*|0) polls=1 ;; esac
+  case "$stable" in ''|*[!0-9]*|0) stable=3 ;; esac
+  FM_BACKEND_HERDR_PROOF_CONTENT=
+  FM_BACKEND_HERDR_PROOF_READS=0
+  while :; do
+    reads=$((reads + 1))
+    FM_BACKEND_HERDR_PROOF_READS=$reads
+    if content=$(fm_backend_herdr_composer_content "$target"); then
+      FM_BACKEND_HERDR_PROOF_CONTENT=$content
+      fm_backend_herdr_composer_payload_shown "$text" "$content" && return 0
+      if [ -n "${content//[$' \t\r\n\v\f']/}" ]; then
+        if [ "$content" = "$prev" ]; then same=$((same + 1)); else same=1; fi
+        [ "$same" -lt "$stable" ] || return 1
+      else
+        same=0
+      fi
+      prev=$content
+    else
+      FM_BACKEND_HERDR_PROOF_CONTENT=
+      prev=''
+      same=0
+    fi
+    [ "$reads" -lt "$polls" ] || return 1
+    sleep "$FM_BACKEND_HERDR_PROOF_INTERVAL"
+  done
+}
+
+# fm_backend_herdr_refusal_note: why a Claude submit was refused, on stderr.
+# send-failed alone ("the exit command could not be sent") gave an operator
+# nothing to act on, and a worker cannot see the pane. The composer excerpt is
+# cut short so a long draft never floods a log.
+fm_backend_herdr_refusal_note() {  # <target> <reason> [composer-text]
+  local shown=${3:-}
+  shown=${shown//[$'\r\n\t']/ }
+  [ "${#shown}" -le 60 ] || shown="${shown:0:60}..."
+  printf 'fm herdr: %s refused a Claude submit: %s%s\n' "$1" "$2" "${3:+ (composer reads: $shown)}" >&2
+}
+
 # fm_backend_herdr_composer_clear: after a refused proof, press Ctrl+U until
 # the shared classifier reads the composer as empty. Claude documents Ctrl+U
 # as delete-to-line-start, repeated across lines of a multiline draft; Ctrl+C
@@ -3431,9 +3494,27 @@ fm_backend_herdr_composer_clear() {  # <target> <text>
   return 1
 }
 
+# fm_backend_herdr_claude_composer_text: `text` when Claude's selected composer
+# still holds text, `none` when it holds none, `unreadable` when it cannot be
+# read. Claude moves a message it queues behind a busy turn OUT of the composer
+# (and flags the footer with `Press up to edit queued messages`, which the
+# shared classifier reads as pending), so text still in the composer after
+# Enter was swallowed, however busy the pane is. Only harnesses that keep
+# queued text visible (the OpenCode shape) may read pending-plus-busy as a
+# queued Enter.
+fm_backend_herdr_claude_composer_text() {  # <target>
+  local content
+  content=$(fm_backend_herdr_composer_content "$1") || { printf 'unreadable'; return 0; }
+  if [ -n "${content//[$' \t\r\n\v\f']/}" ]; then
+    printf 'text'
+  else
+    printf 'none'
+  fi
+}
+
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
-  local raw_status footer_baseline='' allow_rendered=0 enter_sent=0 identity proof=0 content
+  local raw_status footer_baseline='' allow_rendered=0 enter_sent=0 identity proof=0 content claude_text
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   # Claude on Herdr is the live-verified truncation shape: Enter is withheld
   # unless the composer, empty before the send, shows this payload. A suffix
@@ -3442,15 +3523,24 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
   identity=$(fm_backend_herdr_agent_identity_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE") || identity=
   if [ "${identity%%$'\t'*}" = claude ]; then
     proof=1
-    content=$(fm_backend_herdr_composer_content "$target") \
-      || { printf 'send-failed'; return 0; }
-    [ -z "${content//[$' \t\r\n\v\f']/}" ] || { printf 'send-failed'; return 0; }
+    content=$(fm_backend_herdr_composer_content "$target") || {
+      fm_backend_herdr_refusal_note "$target" 'the composer could not be read before typing'
+      printf 'send-failed'
+      return 0
+    }
+    [ -z "${content//[$' \t\r\n\v\f']/}" ] || {
+      fm_backend_herdr_refusal_note "$target" 'the composer already holds text, so nothing was typed' "$content"
+      printf 'send-failed'
+      return 0
+    }
   fi
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
   if [ "$proof" = 1 ]; then
-    if ! content=$(fm_backend_herdr_composer_content "$target") \
-      || ! fm_backend_herdr_composer_payload_shown "$text" "$content"; then
+    if ! fm_backend_herdr_composer_proof "$target" "$text"; then
+      fm_backend_herdr_refusal_note "$target" \
+        "the composer never showed the ${#text}-char payload after $FM_BACKEND_HERDR_PROOF_READS read(s), so Enter was withheld and the composer cleared" \
+        "$FM_BACKEND_HERDR_PROOF_CONTENT"
       if fm_backend_herdr_composer_clear "$target" "$text"; then
         printf 'send-failed'
       else
@@ -3470,6 +3560,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     footer_baseline=$(fm_backend_herdr_rendered_busy_state "$target")
   fi
   while :; do
+    claude_text=
     if fm_backend_herdr_send_key "$target" Enter; then
       enter_sent=1
     elif [ "$enter_sent" -eq 0 ]; then
@@ -3491,6 +3582,10 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       # Native stayed idle. Composer empty is positive delivery (a landed
       # Claude turn that never flipped agent_status). Proven pending retries.
       verdict=$(fm_backend_herdr_composer_state "$target")
+      if [ "$proof" = 1 ] && [ "$verdict" = pending ]; then
+        claude_text=$(fm_backend_herdr_claude_composer_text "$target")
+        [ "$claude_text" != none ] || verdict=empty
+      fi
       case "$verdict" in
         empty) printf 'empty'; return 0 ;;
         pending|pending-unproven) ;;
@@ -3499,8 +3594,15 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     else
       sleep "$sleep_s"
       verdict=$(fm_backend_herdr_composer_state "$target")
+      if [ "$proof" = 1 ] && [ "$verdict" = pending ]; then
+        claude_text=$(fm_backend_herdr_claude_composer_text "$target")
+        [ "$claude_text" != none ] || verdict=empty
+      fi
+      # An idle-to-busy footer transition proves this Enter only when the
+      # payload left the composer; a Claude composer that still shows it was
+      # swallowed, and a turn that started for another reason proves nothing.
       if [ "$verdict" = pending ] && [ "$raw_status" != working ] \
-        && [ "$footer_baseline" = idle ] \
+        && [ "$footer_baseline" = idle ] && [ "$claude_text" != text ] \
         && [ "$(fm_backend_herdr_rendered_busy_state "$target")" = busy ]; then
         verdict=busy
       fi
@@ -3514,6 +3616,9 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     if [ "$i" -ge "$retries" ]; then
       if [ "$enter_sent" -eq 0 ]; then
         printf 'send-failed'
+      elif [ "$claude_text" = text ] && [ "$verdict" = pending ]; then
+        # Claude still shows the payload after every Enter: swallowed, not queued.
+        printf 'pending'
       else
         fm_composer_queued_enter_verdict "$verdict" \
           "$(fm_backend_herdr_queued_enter_busy "$target" "$allow_rendered")"

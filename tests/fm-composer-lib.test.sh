@@ -281,6 +281,54 @@ test_matrix_claude_queued_messages_hint() {
   pass "matrix: claude's queued-messages hint keeps an otherwise idle composer from reading empty"
 }
 
+test_matrix_claude_auto_mode_pane_busy_turn() {
+  # The pane Firstmate captured live on 2026-10-15 (herdr, Claude Code with an
+  # auto-mode footer): a turn is running, so the spinner row and its tip sit
+  # above a plain solid rule pair around a bare `❯` row, and below them are a
+  # user statusLine ending in `❯` with a right-aligned update notice, then the
+  # permission-mode hint. This is the shape fm-control exit and the doorbell
+  # type into. It must read empty, read typed text and the slash popup as
+  # exactly that text, and keep the queued-messages hint pending with an empty
+  # composer, because the herdr submit core tells a swallowed Enter from a
+  # queued one by the composer's content, not by this verdict.
+  local rule spinner tip sl mode idle typed popup wrapped queued claude_idle content doorbell
+  claude_idle=$(printf 'claude\tidle')
+  rule=$(printf '─%.0s' $(seq 1 112))
+  spinner='✻ Kneading… (1m 9s · ↓ 4.1k tokens)'
+  tip="  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work"
+  sl='  Opus 5.5 firstmate❯                                                       Update available! Run: mise upgrade claude'
+  mode='  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents'
+  idle=$spinner$'\n'"$tip"$'\n\n'"$rule"$'\n❯\n'"$rule"$'\n'"$sl"$'\n'"$mode"
+  assert_screen "busy auto-mode pane idle composer on herdr" empty "$CAPS_STYLED" "$idle" '' "$claude_idle"
+  assert_screen "busy auto-mode pane idle composer on tmux" empty "$CAPS_TMUX" "$idle" 4 probe-absent
+  content=$(fm_composer_extract_selected_content "$CAPS_STYLED" "$idle")
+  [ -z "$content" ] || fail "the idle auto-mode composer should extract no content, got '$content'"
+
+  typed=$spinner$'\n'"$tip"$'\n\n'"$rule"$'\n❯ /exit\n'"$rule"$'\n'"$sl"$'\n'"$mode"
+  assert_screen "typed /exit in the busy auto-mode pane" pending "$CAPS_STYLED" "$typed" '' "$claude_idle"
+  content=$(fm_composer_extract_selected_content "$CAPS_STYLED" "$typed")
+  [ "$content" = '/exit' ] || fail "typed /exit should extract exactly '/exit', got '$content'"
+
+  popup=$'  /exit                Exit the REPL\n  /export              Export the conversation\n  /extra-usage         Configure extra usage'
+  typed=$spinner$'\n'"$tip"$'\n\n'"$rule"$'\n❯ /exit\n'"$rule"$'\n'"$popup"$'\n'"$sl"$'\n'"$mode"
+  assert_screen "typed /exit above its popup in the busy auto-mode pane" pending "$CAPS_STYLED" "$typed" '' "$claude_idle"
+  content=$(fm_composer_extract_selected_content "$CAPS_STYLED" "$typed")
+  [ "$content" = '/exit' ] || fail "the popup rows must not read as composer text, got '$content'"
+
+  doorbell=": Firstmate instruction waiting: list '/home/picasso/Projects/firstmate/state/trawler.inbox'/*.msg and, in numeric order, read and act on each, then mv each handled file to '/home/picasso/Projects/firstmate/state/trawler.inbox'/handled/."
+  wrapped=$'❯ : Firstmate instruction waiting: list \'/home/picasso/Projects/firstmate/state/trawler.inbox\'/*.msg and, in numeric\n  order, read and act on each, then mv each handled file to\n  \'/home/picasso/Projects/firstmate/state/trawler.inbox\'/handled/.'
+  typed=$spinner$'\n'"$tip"$'\n\n'"$rule"$'\n'"$wrapped"$'\n'"$rule"$'\n'"$sl"$'\n'"$mode"
+  assert_screen "wrapped doorbell in the busy auto-mode pane" pending "$CAPS_STYLED" "$typed" '' "$claude_idle"
+  content=$(fm_composer_extract_selected_content "$CAPS_STYLED" "$typed")
+  [ "$content" = "$doorbell" ] || fail "the wrapped doorbell should extract as one line, got '$content'"
+
+  queued=$spinner$'\n'"$tip"$'\n\n'"$rule"$'\n❯\n'"$rule"$'\n'"$sl"$'\n  ⏵⏵ auto mode on · Press up to edit queued messages'
+  assert_screen "queued hint in the busy auto-mode pane" pending "$CAPS_STYLED" "$queued" '' "$claude_idle"
+  content=$(fm_composer_extract_selected_content "$CAPS_STYLED" "$queued")
+  [ -z "$content" ] || fail "a queued message is not composer content, got '$content'"
+  pass "matrix: the busy auto-mode pane reads empty idle, exact typed text, and pending-with-empty-content when a message is queued"
+}
+
 test_composer_footer_demotion_needs_a_proven_pair() {
   # The demotion is bounded in three directions, and each bound is a case
   # where a lower glyph row IS the live composer.
@@ -1033,6 +1081,7 @@ test_matrix_claude_bare_nbsp_row
 test_matrix_claude_arrow_statusline_footer
 test_matrix_claude_titled_top_rule
 test_matrix_claude_queued_messages_hint
+test_matrix_claude_auto_mode_pane_busy_turn
 test_composer_footer_demotion_needs_a_proven_pair
 test_composer_footer_zone_is_shape_independent
 test_composer_footer_zone_refuses_rather_than_allows
