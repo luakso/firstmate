@@ -1,0 +1,1 @@
+not ok - Claude Code (2.1.296 (Claude Code)) on herdr 0.9.1 never rendered an idle composer in the lab pane

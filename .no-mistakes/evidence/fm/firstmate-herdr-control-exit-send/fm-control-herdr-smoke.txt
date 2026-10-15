@@ -1,0 +1,29 @@
+ok - real herdr: exit on a pane with no registered agent is idempotent success
+ok - real herdr 0.9.1: a gone session reads recoverable while a live pane and a malformed target do not
+warning: /tmp/fm-control-herdr.TOnoxk/home/data/hsmoke/launch-brief.md records no ship branch; defaulting to legacy branch fm/hsmoke
+warning: /tmp/fm-control-herdr.TOnoxk/home/data/hsmoke/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+ok - real herdr: a drifted agent-free shell returns to its worktree and reuses the same endpoint
+ok - real herdr: interrupt refuses when herdr's own agent registry reports no agent
+ok - real herdr: interrupt delivers the harness's key and proves the agent survived it
+ok - real herdr: no control verb removed the endpoint or the task's local copy
+ok - real herdr 0.9.1: a registration Herdr keeps after its agent exits reads stale-agent and recovers as dead
+ok - real herdr: exit on a pane with a stale registration is idempotent success
+warning: /tmp/fm-control-herdr.TOnoxk/home/data/hsmoke/launch-brief.md records no ship branch; defaulting to legacy branch fm/hsmoke
+warning: /tmp/fm-control-herdr.TOnoxk/home/data/hsmoke/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+ok - real herdr: a stale registration no longer blocks relaunch, and the endpoint and local copy survive
+ok - real herdr: an agent behind an unproven composer fails closed instead of typing an exit command into it
+rm: cannot remove '/tmp/fm-control-herdr.TOnoxk/home/state/hsmoke.git-hooks/sendemail-validate': Permission denied
+rm: cannot remove '/tmp/fm-control-herdr.TOnoxk/home/state/hsmoke.git-hooks/pre-auto-gc': Permission denied
+rm: cannot remove '/tmp/fm-control-herdr.TOnoxk/home/state/hsmoke.git-hooks/post-rewrite': Permission denied
+rm: cannot remove '/tmp/fm-control-herdr.TOnoxk/home/state/hsmoke.git-hooks/pre-push': Permission denied
+rm: cannot remove '/tmp/fm-control-herdr.TOnoxk/home/state/hsmoke.git-hooks/post-merge': Permission denied
+rm: cannot remove '/tmp/fm-control-herdr.TOnoxk/home/state/hsmoke.git-hooks/post-checkout': Permission denied
+rm: cannot remove '/tmp/fm-control-herdr.TOnoxk/home/state/hsmoke.git-hooks/pre-rebase': Permission denied
+rm: cannot remove '/tmp/fm-control-herdr.TOnoxk/home/state/hsmoke.git-hooks/post-commit': Permission denied
+rm: cannot remove '/tmp/fm-control-herdr.TOnoxk/home/state/hsmoke.git-hooks/prepare-commit-msg': Permission denied
+rm: cannot remove '/tmp/fm-control-herdr.TOnoxk/home/state/hsmoke.git-hooks/pre-merge-commit': Permission denied
+rm: cannot remove '/tmp/fm-control-herdr.TOnoxk/home/state/hsmoke.git-hooks/pre-commit': Permission denied
+rm: cannot remove '/tmp/fm-control-herdr.TOnoxk/home/state/hsmoke.git-hooks/post-applypatch': Permission denied
+rm: cannot remove '/tmp/fm-control-herdr.TOnoxk/home/state/hsmoke.git-hooks/pre-applypatch': Permission denied
+rm: cannot remove '/tmp/fm-control-herdr.TOnoxk/home/state/hsmoke.git-hooks/applypatch-msg': Permission denied
+rm: cannot remove '/tmp/fm-control-herdr.TOnoxk/home/state/hsmoke.git-hooks/commit-msg': Permission denied
