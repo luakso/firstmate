@@ -1651,15 +1651,23 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
 # NOT auto-start the server, so this must run before any workspace/tab/pane
 # call. The server outlives its launcher and passes its startup environment to
 # every later pane, so remove home, harness identity, and supervision selection
-# inherited from whichever agent happened to start it. Bounded poll for the
-# server to report running.
+# inherited from whichever agent happened to start it. That includes every
+# per-session marker a Claude Code session hands its children: a leaked
+# CLAUDE_CODE_CHILD_SESSION turns transcript saving off in every Claude pane of
+# the server, so a later restart cannot resume them. The captain's own
+# CLAUDE_CODE_* configuration variables are deliberately not in the list.
+# Bounded poll for the server to report running.
+FM_BACKEND_HERDR_CLAUDE_SESSION_MARKERS="CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SSE_PORT CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_EXECPATH CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_CODE_HOST_HTTP_PROXY_PORT CLAUDE_CODE_HOST_SOCKS_PROXY_PORT CLAUDE_CODE_TMPDIR CLAUDE_TMPDIR CLAUDE_PID AI_AGENT CLAUDE_CODE_BRIDGE_SESSION_ID CLAUDE_EFFORT CLAUDE_JOB_DIR"
+
 fm_backend_herdr_server_ensure() {  # <session>
   local session=$1 running out i
   running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)
   [ "$running" = "true" ] && return 0
   (
+    # shellcheck disable=SC2086 # the marker list is intentionally word-split
     unset FM_HOME FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE \
-      CURSOR_AGENT CURSOR_INVOKED_AS CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT FM_SUPERVISION_MODEL
+      CURSOR_AGENT CURSOR_INVOKED_AS PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT FM_SUPERVISION_MODEL \
+      $FM_BACKEND_HERDR_CLAUDE_SESSION_MARKERS
     fm_backend_herdr_cli "$session" server >/dev/null 2>&1 &
   ) || return 1
   for i in $(seq 1 20); do
