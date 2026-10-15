@@ -354,10 +354,12 @@
 #   worktree carries a .claude/settings.json, whatever it holds, the launch passes
 #   --setting-sources user,local so its hooks and helper commands never run
 #   outside the fence and its keys never merge into it, and tells the worker to
-#   read the project instructions Claude then skips. Skipping that file also
-#   drops its narrowing rules (permissions.deny, sandbox.filesystem denyRead and
-#   denyWrite, sandbox.credentials deny entries, sandbox.network.deniedDomains),
-#   so a captain who relies on them restates them in user settings. A sandboxed
+#   read the project instructions Claude then skips. The launch's --settings
+#   JSON carries over that file's narrowing rules (permissions.deny,
+#   sandbox.filesystem denyRead and denyWrite, sandbox.credentials.sigv4 deny
+#   entries, sandbox.network.deniedDomains) and nothing that widens access; a
+#   file that cannot be read or parsed refuses the launch
+#   (claude_project_narrowing below owns the extraction). A sandboxed
 #   scout's launch brief replaces its captain-hold completion gate, whose
 #   backlog and task-record writes fall outside the fence, with an inventory
 #   firstmate turns into hold and complete (fm_brief_sandbox_scout_overlay).
@@ -2961,11 +2963,8 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
 # applies. Claude ties the project's CLAUDE.md,
 # .claude/rules, skills, and agents to the same source, so the worker's system
 # prompt then tells it to read CLAUDE.md, its imports, and .claude/rules itself.
-# The skipped file's narrowing rules (permissions.deny, sandbox.filesystem
-# denyRead and denyWrite, sandbox.credentials deny entries,
-# sandbox.network.deniedDomains) are dropped with it; they hold again only when
-# restated in user settings, since this worktree's settings.local.json is
-# Firstmate's and is rewritten at every launch.
+# The skipped file's narrowing rules are carried into this JSON instead
+# (claude_project_narrowing below), merged with the fence's own entries.
 # The write grant is exactly what the launch brief tells the worker to
 # write outside its worktree (a sandboxed scout's brief hands its captain-hold
 # completion gate to firstmate instead): its status log (append; created here because a
@@ -2993,8 +2992,8 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
 # the D-Bus keyring login and the no-mistakes daemon socket. An excluded git
 # push still fires the repository's own git hooks (such as a husky pre-push)
 # outside the fence.
-claude_sandbox_settings() {  # <state-dir> <data-dir> <task-tmp> <code-root> <task-id>
-  local state_dir=$1 data_dir=$2 task_tmp=$3 code_root=$4 id=$5
+claude_sandbox_settings() {  # <state-dir> <data-dir> <task-tmp> <code-root> <task-id> [<narrowing-json>]
+  local state_dir=$1 data_dir=$2 task_tmp=$3 code_root=$4 id=$5 narrow=${6:-'{}'}
   local state_real data_real tmp_real root_real json
   state_real=$(cd "$state_dir" && pwd -P) || return 1
   data_real=$(cd "$data_dir" && pwd -P) || return 1
@@ -3003,17 +3002,53 @@ claude_sandbox_settings() {  # <state-dir> <data-dir> <task-tmp> <code-root> <ta
   mkdir -p "$state_real/$id.inbox/handled" "$data_real/$id" \
     "$state_real/$id.gocache/build" "$state_real/$id.gocache/mod" || return 1
   : >>"$state_real/$id.status" || return 1
-  json=$(jq -cn --arg opinbox "$state_real/operational-inbox" --arg skills "$root_real/.agents/skills" '{sandbox: {
+  json=$(jq -cn --arg opinbox "$state_real/operational-inbox" --arg skills "$root_real/.agents/skills" --argjson narrow "$narrow" '{sandbox: {
       enabled: true,
       failIfUnavailable: true,
       allowUnsandboxedCommands: false,
       excludedCommands: ["git push", "git push *", "gh", "gh *", "gh-axi", "gh-axi *", "no-mistakes", "no-mistakes *"],
-      filesystem: {allowWrite: $ARGS.positional, denyWrite: [$opinbox, $skills]},
+      filesystem: {allowWrite: $ARGS.positional, denyWrite: ([$opinbox, $skills] + ($narrow.denyWrite // []))},
       network: {strictAllowlist: true, allowedDomains: ["proxy.golang.org", "sum.golang.org", "registry.npmjs.org"]}
-    }}' --args "$state_real/$id.status" "$state_real/$id.inbox" "$data_real/$id" "$tmp_real" "$state_real/$id.gocache") || return 1
+    }}
+    | if ($narrow.denyRead // [] | length) > 0 then .sandbox.filesystem.denyRead = $narrow.denyRead else . end
+    | if ($narrow.deniedDomains // [] | length) > 0 then .sandbox.network.deniedDomains = $narrow.deniedDomains else . end
+    | if ($narrow.sigv4 // {} | length) > 0 then .sandbox.credentials = {sigv4: $narrow.sigv4} else . end
+    | if ($narrow.deny // [] | length) > 0 then .permissions = {deny: $narrow.deny} else . end' --args "$state_real/$id.status" "$state_real/$id.inbox" "$data_real/$id" "$tmp_real" "$state_real/$id.gocache") || return 1
   json=${json#\{}
   json=${json%\}}
   printf ',%s' "${json//\'/\'\\\'\'}"
+}
+
+# config/claude-sandbox=on (header above): a sandboxed launch never loads the
+# worktree's .claude/settings.json, so the rules in it that only narrow access
+# are read here and carried into the launch --settings JSON. Prints one compact
+# JSON object with deny (permissions.deny), denyRead and denyWrite
+# (sandbox.filesystem; relative entries resolve against the worktree root, since
+# the launch JSON is not project settings and Claude would not anchor them
+# there), deniedDomains (sandbox.network), and sigv4 (the sandbox.credentials
+# sigv4 streaming, presigned, and sigv4a entries set to "deny"). Nothing else is
+# read, so allow rules, extra allowed domains, permission-mode changes, and hooks
+# never reach the launch. Fails, printing nothing, when the file cannot be read,
+# is not a JSON object, or holds a narrowing key of the wrong shape, so the
+# caller refuses the launch instead of silently dropping the rules.
+claude_project_narrowing() {  # <settings-file> <worktree>
+  local file=$1 wt=$2 out
+  [ -r "$file" ] || return 1
+  out=$(jq -c --arg wt "$wt" '
+    def strs: if . == null then [] elif type == "array" and all(.[]; type == "string") then . else error("not a list of strings") end;
+    def obj: if . == null then {} elif type == "object" then . else error("not an object") end;
+    def anchored: map(if startswith("/") or startswith("~") then . elif startswith("./") then $wt + .[1:] else $wt + "/" + . end);
+    if type != "object" then error("not an object") else . end
+    | {
+        deny: (.permissions | obj | .deny | strs),
+        denyRead: (.sandbox | obj | .filesystem | obj | .denyRead | strs | anchored),
+        denyWrite: (.sandbox | obj | .filesystem | obj | .denyWrite | strs | anchored),
+        deniedDomains: (.sandbox | obj | .network | obj | .deniedDomains | strs),
+        sigv4: (.sandbox | obj | .credentials | obj | .sigv4 | obj
+          | with_entries(select((.key | IN("streaming", "presigned", "sigv4a")) and .value == "deny")))
+      }' "$file" 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
 }
 
 # config/claude-sandbox=on (header above): the fence's network allowlist reaches
@@ -5428,7 +5463,14 @@ case "$LAUNCH" in
   CLAUDE_SETTING_SOURCES=
   CLAUDE_PROJECT_MEMORY=
   if [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
-    CLAUDE_SANDBOX_JSON=$(claude_sandbox_settings "$STATE" "$DATA" "$TASK_TMP" "$FM_ROOT" "$ID") || {
+    CLAUDE_PROJECT_NARROWING='{}'
+    if [ -e "$WT/.claude/settings.json" ] || [ -L "$WT/.claude/settings.json" ]; then
+      CLAUDE_PROJECT_NARROWING=$(claude_project_narrowing "$WT/.claude/settings.json" "$WT") || {
+        echo "error: could not read the narrowing rules (permissions.deny, sandbox deny lists, deniedDomains) from $WT/.claude/settings.json for $ID's claude sandbox; the file is unreadable or malformed, and a sandboxed launch would drop its rules, so fix or remove the file" >&2
+        exit 1
+      }
+    fi
+    CLAUDE_SANDBOX_JSON=$(claude_sandbox_settings "$STATE" "$DATA" "$TASK_TMP" "$FM_ROOT" "$ID" "$CLAUDE_PROJECT_NARROWING") || {
       echo "error: could not resolve the write grant for $ID's claude sandbox" >&2
       exit 1
     }

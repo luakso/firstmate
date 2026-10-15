@@ -2356,6 +2356,84 @@ test_claude_sandbox_drops_committed_project_settings() {
   pass "config/claude-sandbox=on drops the project setting source whenever the worktree carries project settings"
 }
 
+# A sandboxed launch skips the project's .claude/settings.json, so the rules in
+# it that only narrow access ride the launch --settings JSON instead: deny lists
+# and domains merge with the fence's own, relative filesystem entries anchor at
+# the worktree root, and nothing that widens access is carried over. A file
+# Firstmate cannot read as settings refuses the spawn rather than dropping them.
+test_claude_sandbox_carries_project_narrowing_rules() {
+  local project rec id out status launch settings clone
+  for project in narrowing widening malformed wrongshape; do
+    id="sandbox-narrow-$project-z33"
+    rec=$(make_spawn_case "sandbox-narrow-$project" claude "$id")
+    read_case_record "$rec"
+    printf 'on\n' > "$HOME_DIR/config/claude-sandbox"
+    printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
+    mkdir -p "$PROJ_DIR/.claude"
+    case "$project" in
+    narrowing)
+      printf '%s\n' '{"permissions":{"allow":["Bash(*)"],"deny":["Read(./.env)","Edit(./secrets/**)"]},"sandbox":{"filesystem":{"denyRead":["~/.ssh","./private"],"denyWrite":["/etc/x","dist"]},"credentials":{"sigv4":{"streaming":"deny","presigned":"allow"}},"network":{"deniedDomains":["evil.example"]}}}' \
+        > "$PROJ_DIR/.claude/settings.json"
+      ;;
+    widening)
+      printf '%s\n' '{"permissions":{"allow":["Bash(*)"],"defaultMode":"bypassPermissions","additionalDirectories":["/"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"x"}]}]},"sandbox":{"enabled":false,"excludedCommands":["*"],"filesystem":{"allowWrite":["~"],"allowRead":["~"]},"network":{"allowedDomains":["evil.example"],"strictAllowlist":false}}}' \
+        > "$PROJ_DIR/.claude/settings.json"
+      ;;
+    malformed) printf '%s\n' '{"permissions": {"deny": [' > "$PROJ_DIR/.claude/settings.json" ;;
+    wrongshape) printf '%s\n' '{"permissions":{"deny":"Read(./.env)"}}' > "$PROJ_DIR/.claude/settings.json" ;;
+    esac
+    git -C "$PROJ_DIR" add .claude/settings.json
+    git -C "$PROJ_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+      commit -qm "project settings ($project)" || fail "could not commit the $project project settings"
+    git -C "$PROJ_DIR" push --quiet origin HEAD || fail "could not publish the $project project settings"
+
+    clone=$(task_clone_path "$id")
+    out=$(run_ship_spawn "$HOME_DIR" "$clone" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+    status=$?
+    case "$project" in
+    malformed | wrongshape)
+      [ "$status" -ne 0 ] || fail "a sandboxed spawn over $project project settings should refuse"$'\n'"$out"
+      assert_contains "$out" "narrowing rules" "the $project refusal did not name the dropped narrowing rules"
+      assert_contains "$out" ".claude/settings.json" "the $project refusal did not name the settings file"
+      assert_no_grep "claude --permission-mode" "$LAUNCH_LOG" "a sandboxed claude launched despite $project project settings"
+      ;;
+    *)
+      expect_code 0 "$status" "claude spawn with $project project settings should succeed"$'\n'"$out"
+      launch=$(cat "$LAUNCH_LOG")
+      settings=$(claude_settings_json_arg "$launch") || fail "the $project launch carried no --settings JSON"$'\n'"$launch"
+      ;;
+    esac
+    case "$project" in
+    narrowing)
+      printf '%s' "$settings" | jq -e '
+        .permissions == {deny: ["Read(./.env)", "Edit(./secrets/**)"]}
+        and (.sandbox.filesystem.denyRead | (length == 2) and .[0] == "~/.ssh" and (.[1] | startswith("/") and endswith("/private")))
+        and (.sandbox.filesystem.denyWrite | (index("/etc/x") != null) and any(.[]; startswith("/") and endswith("/dist")) and length == 4)
+        and .sandbox.credentials == {sigv4: {streaming: "deny"}}
+        and .sandbox.network.deniedDomains == ["evil.example"]
+        and .sandbox.network.strictAllowlist == true
+        and .sandbox.enabled == true' >/dev/null \
+        || fail "the launch did not carry the project's narrowing rules"$'\n'"$settings"
+      ;;
+    widening)
+      printf '%s' "$settings" | jq -e '
+        (has("permissions") | not) and (has("hooks") | not)
+        and .sandbox.enabled == true
+        and .sandbox.network.strictAllowlist == true
+        and (.sandbox.network | has("deniedDomains") | not)
+        and (.sandbox.filesystem | has("denyRead") | not)
+        and (.sandbox | has("credentials") | not)
+        and (.sandbox.network.allowedDomains | index("evil.example") == null)
+        and (.sandbox.filesystem.allowWrite | index("~") == null)
+        and (.sandbox.excludedCommands | index("*") == null)' >/dev/null \
+        || fail "the launch carried widening project settings"$'\n'"$settings"
+      ;;
+    esac
+    rm -rf -- "/tmp/fm-$id"
+  done
+  pass "config/claude-sandbox=on copies only the project's narrowing rules and refuses unreadable settings"
+}
+
 test_claude_sandbox_invalid_refuses_before_endpoint_or_metadata() {
   local rec id out status
   id=sandbox-invalid-z26
@@ -2555,6 +2633,7 @@ test_claude_sandbox_downloads_go_modules_at_spawn
 test_claude_sandbox_installs_js_dependencies_at_spawn
 test_claude_sandbox_failed_spawn_removes_its_module_cache
 test_claude_sandbox_drops_committed_project_settings
+test_claude_sandbox_carries_project_narrowing_rules
 test_claude_sandbox_invalid_refuses_before_endpoint_or_metadata
 test_claude_sandbox_refuses_without_auto_permission_mode
 test_claude_sandbox_refuses_raw_claude_command
