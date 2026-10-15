@@ -553,7 +553,8 @@ It ignores U+2063 because Claude's Herdr read-back never shows it.
 
 The proof is a bounded poll, not one read after the settle.
 A pane on a loaded host renders a typed burst late or in pieces, and a single early read judged that payload unsent and cleared it.
-The adapter re-reads every `FM_BACKEND_HERDR_PROOF_INTERVAL` seconds (0.5) for up to `FM_BACKEND_HERDR_PROOF_POLLS` reads (10).
+The adapter re-reads every `FM_BACKEND_HERDR_PROOF_INTERVAL` seconds (0.5) for up to `FM_BACKEND_HERDR_PROOF_POLLS` reads (20).
+Claude's slash-command menu renders a few seconds after the typed text, so an empty composer is waited out for the full budget.
 An empty or unreadable composer keeps waiting, and a composer that is still changing is not refused.
 A composer that settles on the same non-payload text for `FM_BACKEND_HERDR_PROOF_STABLE` consecutive reads (3) is refused at once, because waiting cannot repair a truncated payload.
 Every refusal writes its reason, and an excerpt of what the composer held, to stderr.

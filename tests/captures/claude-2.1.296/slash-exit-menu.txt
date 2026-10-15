@@ -1,0 +1,10 @@
+✻ Baked for 1m 15s · done 7:11 PM
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ /exit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ❯ /exit                             Exit the CLI
+    /context                          Visualize current context usage as a colored grid
+    /usage-credits                    Configure usage credits or request them from your admin when you hit a limit
+    /quiet                            Enter quiet supervision mode when the captain invokes /quiet or asks for quiet
+                                      mode, quiet-while-present, or fewer routine wake turns while they stay in the s…

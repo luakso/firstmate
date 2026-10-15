@@ -1167,6 +1167,12 @@ The popup rows sit below the composer's closing rule, which is a structural edge
 Verified live in the lab: with the popup up the state read answers `pending` (previously `empty`) and the payload proof returns `/exit` (previously empty), the submit presses Enter, and the Claude process exits, leaving the shell prompt.
 Growing the window only adds rows above the composer, so the bottom-most-shape selection, the footer zone, and every previously passing verdict are unchanged.
 
+Observed 2026-10-15 on Claude Code 2.1.296 (herdr): the menu is a different shape from the 2.1.283 popup.
+Its first row is the highlighted entry, led by the composer's own `❯` glyph and repeating the typed command (`❯ /exit    Exit the CLI`), and it renders a few seconds after the typed text, so an immediate read shows an empty composer.
+The shared classifier read that highlighted row as a second composer, so the proof saw the menu text, refused it as a stable non-payload, and cleared `/exit`.
+`_fm_composer_locate_footer_zone` now treats a menu whose first row is the highlighted entry for the typed `/command`, followed by further `/command    description` rows or their wrapped descriptions, as footer furniture, so the composer row is selected and reads exactly `/exit`.
+The capture is `tests/captures/claude-2.1.296/slash-exit-menu.txt`; `tests/fm-composer-lib.test.sh` and `tests/fm-backend-herdr.test.sh` build their regressions from it, and Firstmate verifies the live exit after merge.
+
 Portable regressions (they fail against the bounded-tail reads and pass against the viewport reads):
 
 ```sh

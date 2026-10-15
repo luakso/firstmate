@@ -1389,6 +1389,53 @@ _fm_composer_row_is_composer_furniture() {  # <trimmed-row> <proof-glyph>
   [ -n "$proof" ] && [ "$glyph" != "$proof" ]
 }
 
+# _fm_composer_slash_menu_typed: the slash command typed in the composer row
+# <row> (the envelope's proving glyph row, trimmed), or empty. Only a row of
+# the form `<glyph> /word` qualifies, so ordinary prose never opens a menu.
+_fm_composer_slash_menu_typed() {  # <trimmed-row> <proof-glyph>
+  local row=$1 proof=$2 typed
+  [ -n "$proof" ] || return 1
+  case "$row" in "$proof"*) typed=${row#"$proof"} ;; *) return 1 ;; esac
+  fm_composer_normalize_trim_var typed
+  case "$typed" in
+    /?*) ;;
+    *) return 1 ;;
+  esac
+  case "$typed" in *[[:space:]]*) return 1 ;; esac
+  printf '%s' "$typed"
+}
+
+# _fm_composer_row_is_slash_menu_row: 0 when <row> belongs to the command menu
+# Claude Code opens under its composer while a slash command is typed (2.1.296):
+# the FIRST row is the highlighted entry, led by the composer's own glyph, whose
+# command begins with what is typed (`❯ /exit    Exit the CLI` under `❯ /exit`);
+# later rows are further `/command    description` entries, or a description
+# wrapped to the description column. <state> is `first` for the first row below
+# the envelope and `open` after it. A row led by the composer's glyph that does
+# not extend the typed command stays a live composer, so this is no wider than
+# the one shape the menu draws.
+_fm_composer_row_is_slash_menu_row() {  # <raw-row> <proof-glyph> <typed> <state>
+  local raw=$1 proof=$2 typed=$3 state=$4 trimmed body cmd indent
+  trimmed=$raw
+  fm_composer_normalize_trim_var trimmed
+  [ -n "$trimmed" ] && [ -n "$typed" ] || return 1
+  if [ "$state" = first ]; then
+    case "$trimmed" in "$proof"*) body=${trimmed#"$proof"} ;; *) return 1 ;; esac
+    fm_composer_normalize_trim_var body
+  else
+    indent=${raw%%[![:space:]]*}
+    [ "${#indent}" -lt 6 ] || return 0
+    body=$trimmed
+  fi
+  case "$body" in
+    /?*"  "*) ;;
+    *) return 1 ;;
+  esac
+  cmd=${body%%"  "*}
+  [ "$state" != first ] || case "$cmd" in "$typed"*) ;; *) return 1 ;; esac
+  return 0
+}
+
 # _fm_composer_locate_footer_zone: THE composer footer zone of <plain> (see THE
 # COMPOSER FOOTER ZONE in this file's header). Records the bottom-most
 # glyph-PROVEN envelope in FM_COMPOSER_FOOTER_AFTER (its closing row, including
@@ -1405,7 +1452,7 @@ _fm_composer_row_is_composer_furniture() {  # <trimmed-row> <proof-glyph>
 # when no envelope is glyph-proven, when a blank row sits directly beneath it,
 # or when the run holds no bare candidate at all (nothing to demote).
 _fm_composer_locate_footer_zone() {  # <plain>
-  local plain=$1 close next trimmed proof=''
+  local plain=$1 close next trimmed proof='' raw typed menu=''
   FM_COMPOSER_FOOTER_AFTER=-1
   FM_COMPOSER_FOOTER_GLYPH=-1
   FM_COMPOSER_FOOTER_LAST=-1
@@ -1441,10 +1488,22 @@ _fm_composer_locate_footer_zone() {  # <plain>
   [ "$FM_COMPOSER_SCAN_BARE_ROW" -gt "$FM_COMPOSER_FOOTER_AFTER" ] || return 1
   FM_COMPOSER_FOOTER_LAST=$FM_COMPOSER_FOOTER_AFTER
   next=$((FM_COMPOSER_FOOTER_AFTER + 1))
+  typed=$(_fm_composer_screen_row "$FM_COMPOSER_FOOTER_GLYPH" "$plain")
+  fm_composer_normalize_trim_var typed
+  typed=$(_fm_composer_slash_menu_typed "$typed" "$proof") || typed=
   while :; do
-    trimmed=$(_fm_composer_screen_row "$next" "$plain")
+    raw=$(_fm_composer_screen_row "$next" "$plain")
+    trimmed=$raw
     fm_composer_normalize_trim_var trimmed
     [ -n "$trimmed" ] || break
+    if [ -n "$typed" ] && [ "$menu" != closed ] \
+       && _fm_composer_row_is_slash_menu_row "$raw" "$proof" "$typed" "${menu:-first}"; then
+      menu=open
+      FM_COMPOSER_FOOTER_LAST=$next
+      next=$((next + 1))
+      continue
+    fi
+    [ "$menu" != open ] || menu=closed
     _fm_composer_row_is_composer_furniture "$trimmed" "$proof" || return 1
     FM_COMPOSER_FOOTER_LAST=$next
     next=$((next + 1))
