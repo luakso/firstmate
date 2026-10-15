@@ -521,7 +521,9 @@ An environment variable alone is not reliable when another Herdr server is runni
 When the selected named server is not running, the adapter launches it without these inherited values:
 
 - Firstmate home and directory overrides.
-- Harness identity markers.
+- Harness identity markers, including every per-session marker a Claude Code session hands its children (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SSE_PORT`, `CLAUDE_CODE_SESSION_ID`, and the rest of `FM_BACKEND_HERDR_CLAUDE_SESSION_MARKERS`).
+  A leaked `CLAUDE_CODE_CHILD_SESSION` turns transcript saving off in every Claude pane, so a later restart could not resume them.
+  The captain's own `CLAUDE_CODE_*` configuration variables are kept.
 - The supervision-model override.
 
 Herdr passes its server startup environment to every later pane, so retaining those values could misroute panes for another Firstmate home or harness.
@@ -667,6 +669,10 @@ A restored same-labeled tab with a missing pane or no registered agent is a husk
 
 Create replaces only a confidently dead or no-agent husk, creates the replacement before closing the old tab, and refuses live or unknown states.
 This prevents closing the workspace's last tab before a replacement exists.
+
+Herdr's own session restore can also resume a worker in the primary checkout without Firstmate's launch flags, so its sandbox is off.
+Firstmate does not detect this today: whether a restored pane runs in the wrong directory or without the launch flags depends on process-info fields not yet verified against a live restored Claude pane.
+Relaunch such a worker with `bin/fm-control.sh <task-id> relaunch`, which starts it with Firstmate's launch flags in its recorded worktree.
 
 ### Stale agent registrations
 
