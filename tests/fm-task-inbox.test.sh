@@ -385,6 +385,45 @@ test_ring_submits_its_own_stuck_doorbell() {
   pass "inbox: the ring submits its own stuck doorbell, skips other pending text, and retries a lost Enter once on both paths"
 }
 
+# A freshly typed doorbell whose Enters were all swallowed (a pane slowed by host
+# load takes the keystroke as part of the paste) used to be left in the
+# composer: the ring discarded the submit verdict, so the line sat unsent until
+# someone pressed Enter by hand. A doorbell the submit machinery did not confirm
+# is now re-submitted while it stays put, and a bounded number of times.
+test_ring_resubmits_a_fresh_doorbell_whose_enters_were_all_swallowed() {
+  local dir state rec doorbell log composer drops rc
+  dir="$TMP_ROOT/ring-swallowed"
+  state="$dir/state"
+  mkdir -p "$state"
+  make_composer_stub "$dir"
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "please continue")
+  doorbell=$(inbox_lib "$state" fm_task_inbox_doorbell_line "$rec")
+  log="$dir/send.log"; composer="$dir/composer"; drops="$dir/drops"
+  ring() {
+    PATH="$dir/fakebin:$PATH" FM_SEND_LOG="$log" FM_FAKE_COMPOSER="$composer" \
+      FM_FAKE_DROP_ENTERS="$drops" FM_TASK_INBOX_RERING_SLEEP=0.01 \
+      inbox_lib "$state" fm_task_inbox_ring tmux sess:fm-t1 "$rec" fm-t1
+  }
+
+  # Both of the submit core's Enters are swallowed; the ring's own Enter lands.
+  : > "$log"; : > "$composer"; echo 2 > "$drops"
+  rc=0; ring || rc=$?
+  [ "$rc" = 0 ] || fail "a ring whose submit-core Enters were swallowed should still report rung, got rc $rc"
+  [ "$(cat "$log")" = "SUBMIT: $doorbell" ] \
+    || fail "the ring should re-press Enter and submit the doorbell exactly once:"$'\n'"$(cat "$log")"
+  [ ! -s "$composer" ] || fail "a swallowed doorbell was left in the composer"
+
+  # The re-press is bounded: a pane that swallows every Enter is not hammered.
+  : > "$log"; : > "$composer"; echo 9 > "$drops"
+  rc=0; ring || rc=$?
+  [ "$rc" = 0 ] || fail "a pane that swallows every Enter should not turn the ring into a failure, got rc $rc"
+  [ ! -s "$log" ] || fail "no Enter should have landed on a pane that swallows them all:"$'\n'"$(cat "$log")"
+  [ "$(cat "$drops")" = 5 ] \
+    || fail "the ring should press Enter twice more after the submit core's two (4 of 9 swallows spent), found $(cat "$drops") left"
+  [ "$(cat "$composer")" = "$doorbell" ] || fail "the unsent doorbell should remain typed once, not duplicated: $(cat "$composer")"
+  pass "inbox: a fresh doorbell whose Enters were all swallowed is re-submitted, boundedly, while it stays in the composer"
+}
+
 test_idempotent_write_dedups_exact_body() {
   local state r1 r2 r3 r4 count text
   state="$TMP_ROOT/idem/state"; mkdir -p "$state"
@@ -803,6 +842,7 @@ test_doorbell_is_a_shell_noop
 test_doorbell_rejects_terminal_controls
 test_ring_skips_dead_agent
 test_ring_submits_its_own_stuck_doorbell
+test_ring_resubmits_a_fresh_doorbell_whose_enters_were_all_swallowed
 test_idempotent_write_dedups_exact_body
 test_idempotent_write_follows_concurrent_ack
 test_handled_mv_dedups_by_sequence

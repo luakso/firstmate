@@ -69,6 +69,8 @@
 # Tunables (env):
 #   FM_TASK_INBOX_GRACE_SECS   default 90; delivery-attempt grace and spacing
 #   FM_TASK_INBOX_RING_MAX     default 3; delivery attempts before escalation
+#   FM_TASK_INBOX_RERING_SLEEP default 1; seconds before each extra Enter on a
+#                              doorbell that stayed in the composer
 
 _FM_TASK_INBOX_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Both dependencies are canonical lint roots in their own right. Keep them as
@@ -272,7 +274,7 @@ fm_task_inbox_doorbell_line() {  # <record-path>
 
 # Ring the doorbell, best-effort: one endpoint-liveness pre-check, one advisory
 # composer pre-check, then the backend's submit machinery with a minimal retry
-# budget, verdict discarded.
+# budget; only send-failed and a doorbell left in the composer are acted on.
 # Returns 0 rang, 1 skipped because the composer PROVENLY holds pending text
 # other than our own doorbell (the watcher re-rings later), 2 the backend send
 # failed, 3 skipped because the endpoint is positively dead or missing (nothing
@@ -287,7 +289,8 @@ fm_task_inbox_doorbell_line() {  # <record-path>
 # A pending composer holding exactly our own doorbell line is a previous ring
 # whose Enter never landed, so on an agent not reported busy it is submitted
 # rather than skipped; skipping it would block every later ring. On both paths
-# a lost first Enter gets one confirmed retry.
+# a lost first Enter gets one confirmed retry, and a freshly typed doorbell the
+# submit machinery did not confirm is re-submitted while it stays in the composer.
 fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label]
   local backend=$1 target=$2 rec=$3 label=${4:-} line cstate verdict
   case "$(fm_backend_agent_state "$backend" "$target" 2>/dev/null || true)" in
@@ -316,9 +319,22 @@ fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label]
   if ! verdict=$(fm_backend_send_text_submit "$backend" "$target" "$line" 2 0.4 0.3 "$label" 2>/dev/null); then
     return 2
   fi
-  # The verdict is read only to report a failed keystroke; every other value
-  # (empty, pending, unknown, ...) is deliberately ignored, never proof.
   [ "$verdict" != send-failed ] || return 2
+  # No verdict is delivery proof, but one that is not a confirmed `empty` while
+  # the composer still holds exactly our doorbell is a swallowed Enter (a pane
+  # slowed by host load takes the keystroke as part of the paste): the line
+  # would sit unsent until someone pressed Enter by hand. Press Enter again,
+  # spaced for that slowness, while the doorbell stays put. A duplicate
+  # doorbell is a no-op by construction, so this can only err toward ringing.
+  if [ "$verdict" != empty ]; then
+    local n=0
+    while [ "$n" -lt 2 ]; do
+      sleep "${FM_TASK_INBOX_RERING_SLEEP:-1}"
+      fm_task_inbox_composer_holds "$backend" "$target" "$line" "$label" || return 0
+      fm_backend_send_key "$backend" "$target" Enter "$label" >/dev/null 2>&1 || return 2
+      n=$((n + 1))
+    done
+  fi
   return 0
 }
 

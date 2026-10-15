@@ -34,6 +34,9 @@ TMP_ROOT=$(fm_test_tmproot fm-backend-herdr-tests)
 mkdir -p "$TMP_ROOT/ambient-home"
 export FM_HOME="$TMP_ROOT/ambient-home"
 export FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0
+# One proof read reproduces the adapter's pre-polling call sequence, which the
+# numbered fixtures below depend on; the polling cases set their own count.
+export FM_BACKEND_HERDR_PROOF_POLLS=1
 
 # make_herdr_fakebin: a `herdr` stub that logs every invocation (one line,
 # unit-separated args, to $FM_HERDR_LOG) and returns the canned response for
@@ -5041,6 +5044,184 @@ test_send_text_submit_claude_slash_popup_composer_is_still_proven_and_submitted(
   pass "fm_backend_herdr_send_text_submit: a typed slash command hidden behind its popup is still proven and submitted"
 }
 
+# herdr_auto_mode_screen: the bottom of a Claude Code pane in the shape Firstmate
+# captured live on 2026-10-15 (data/firstmate-herdr-control-exit-send, an idle
+# composer mid-turn): the spinner row and its tip above a plain solid rule
+# pair, a user statusLine whose last glyph is `❯` and a right-aligned update
+# notice, then the permission-mode hint. <composer> is the row between the
+# rules; <menu> is an optional popup block rendered under the closing rule;
+# <hint> is an optional footer row such as the queued-messages hint.
+herdr_auto_mode_screen() {  # <composer-row> [menu] [hint]
+  local composer=$1 menu=${2:-} hint=${3:-} rule i
+  rule=$(printf '%0.s\xe2\x94\x80' $(seq 1 112))
+  printf '  \xe2\x9c\xbb Kneading\xe2\x80\xa6 (1m 9s \xc2\xb7 \xe2\x86\x93 4.1k tokens)\n'
+  printf "    \xe2\x8e\xbf  Tip: Use /btw to ask a quick side question without interrupting Claude's current work\n\n"
+  printf '%s\n' "$rule"
+  printf '%s\n' "$composer"
+  printf '%s\n' "$rule"
+  [ -z "$menu" ] || printf '%s\n' "$menu"
+  printf '  Opus 5.5 firstmate\xe2\x9d\xaf                                                       Update available! Run: mise upgrade claude\n'
+  if [ -n "$hint" ]; then
+    printf '  \xe2\x8f\xb5\xe2\x8f\xb5 auto mode on (shift+tab to cycle) \xc2\xb7 %s\n' "$hint"
+  else
+    printf '  \xe2\x8f\xb5\xe2\x8f\xb5 auto mode on (shift+tab to cycle) \xc2\xb7 \xe2\x86\x90 for agents\n'
+  fi
+  for ((i = 0; i < 0; i++)); do :; done
+}
+
+herdr_auto_mode_popup() {  # <typed>
+  local i out="  $1    Exit the REPL"
+  for ((i = 0; i < 18; i++)); do
+    out+=$(printf '\n  /skill-%02d    A skill description long enough to read as a popup row' "$i")
+  done
+  printf '%s' "$out"
+}
+
+herdr_read_count() {  # <log>
+  grep -c $'\x1f''pane'$'\x1f''read'$'\x1f''w1:p2'$'\x1f''--source'$'\x1f''visible' "$1"
+}
+
+# A loaded host renders Claude's typed burst late: the one fixed-settle proof
+# read saw an empty (or half-rendered) composer, judged /exit unsent, cleared it,
+# and fm-control exit reported "could not be sent" without ever pressing Enter.
+test_send_text_submit_claude_proof_waits_for_a_late_render() {
+  local dir log resp fb out enter_count text
+  dir="$TMP_ROOT/submit-claude-late-render"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  text='/exit'
+  herdr_submit_claude_prefix "$resp" "$text"
+  herdr_auto_mode_screen '❯ ' > "$resp/2.out"
+  herdr_auto_mode_screen '❯ ' > "$resp/4.out"
+  herdr_auto_mode_screen '❯ /e' > "$resp/5.out"
+  herdr_auto_mode_screen '❯ /exit' "$(herdr_auto_mode_popup /exit)" > "$resp/6.out"
+  printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/7.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/9.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    FM_BACKEND_HERDR_PROOF_POLLS=6 FM_BACKEND_HERDR_PROOF_INTERVAL=0.01 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 3 0.01 0.01' "$ROOT" "$text" )
+  [ "$out" = empty ] || fail "a payload that renders on the third read must still be proven and submitted, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "the late-rendered payload should be submitted once, sent $enter_count Enter(s)"
+  [ "$(herdr_ctrl_u_count "$log")" -eq 0 ] || fail "a payload that was only slow to render must not be cleared"
+  [ "$(herdr_read_count "$log")" -eq 4 ] || fail "expected one pre-send read and three proof reads, saw $(herdr_read_count "$log")"
+  pass "fm_backend_herdr_send_text_submit: a Claude payload that renders late is waited for, proven, and submitted without a clear"
+}
+
+test_send_text_submit_claude_proof_refusal_is_bounded_and_explained() {
+  local dir log resp fb out err enter_count text n
+  dir="$TMP_ROOT/submit-claude-never-renders"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  text='/exit'
+  herdr_submit_claude_prefix "$resp" "$text"
+  for n in 2 4 5 6 7; do herdr_auto_mode_screen '❯ ' > "$resp/$n.out"; done
+  herdr_auto_mode_screen '❯ ' > "$resp/9.out"
+  fb=$(make_herdr_fakebin "$dir")
+  err="$dir/err"
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    FM_BACKEND_HERDR_PROOF_POLLS=4 FM_BACKEND_HERDR_PROOF_INTERVAL=0.01 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 3 0.01 0.01' "$ROOT" "$text" 2>"$err" )
+  [ "$out" = send-failed ] || fail "a payload that never renders must be refused as send-failed once the composer reads empty, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 0 ] || fail "an unproven payload must not be submitted, sent $enter_count Enter(s)"
+  [ "$(herdr_read_count "$log")" -ge 5 ] || fail "the refusal must wait out the proof reads before clearing"
+  assert_contains "$(cat "$err")" 'refused a Claude submit' "a refused submit must say why on stderr"
+  assert_contains "$(cat "$err")" '4 read(s)' "the refusal note must report how long it waited"
+  pass "fm_backend_herdr_send_text_submit: a payload that never renders is refused after a bounded wait, with the reason on stderr"
+}
+
+test_send_text_submit_claude_proof_refuses_a_stable_suffix_without_waiting_it_out() {
+  local dir log resp fb out err text suffix reads
+  dir="$TMP_ROOT/submit-claude-stable-suffix"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  text=$(herdr_long_payload 1492)
+  suffix=${text: -480}
+  herdr_submit_claude_prefix "$resp" "$text"
+  printf '  \xe2\x9d\xaf %s\n' "$suffix" > "$resp/4.out"
+  printf '  \xe2\x9d\xaf %s\n' "$suffix" > "$resp/5.out"
+  printf '  \xe2\x9d\xaf\n' > "$resp/7.out"
+  fb=$(make_herdr_fakebin "$dir")
+  err="$dir/err"
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    FM_BACKEND_HERDR_PROOF_POLLS=10 FM_BACKEND_HERDR_PROOF_STABLE=2 FM_BACKEND_HERDR_PROOF_INTERVAL=0.01 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 3 0.01 0.01' "$ROOT" "$text" 2>"$err" )
+  [ "$out" = send-failed ] || fail "a stable payload suffix must still be refused and cleared, got '$out'"
+  reads=$(herdr_read_count "$log")
+  [ "$reads" -le 5 ] || fail "a stable suffix is refused without spending the whole poll budget, read $reads times"
+  assert_contains "$(cat "$err")" '2 read(s)' "the stable suffix is refused on the second agreeing read"
+  assert_contains "$(cat "$err")" 'composer reads: ' "the refusal note should show what the composer held"
+  [ "$(herdr_ctrl_u_count "$log")" -eq 1 ] || fail "the refused suffix should be cleared with one Ctrl+U"
+  pass "fm_backend_herdr_send_text_submit: a composer that settles on a payload suffix is refused promptly, not waited out"
+}
+
+test_send_text_submit_claude_proof_does_not_mistake_growth_for_a_stable_suffix() {
+  local dir log resp fb out text
+  dir="$TMP_ROOT/submit-claude-growing"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  text='Firstmate instruction waiting: list the inbox and act on each message in numeric order.'
+  herdr_submit_claude_prefix "$resp" "$text"
+  printf '  \xe2\x9d\xaf Firstmate instruction\n' > "$resp/4.out"
+  printf '  \xe2\x9d\xaf Firstmate instruction waiting: list the inbox\n' > "$resp/5.out"
+  printf '  \xe2\x9d\xaf %s\n' "$text" > "$resp/6.out"
+  printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/7.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/9.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    FM_BACKEND_HERDR_PROOF_POLLS=6 FM_BACKEND_HERDR_PROOF_STABLE=2 FM_BACKEND_HERDR_PROOF_INTERVAL=0.01 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 3 0.01 0.01' "$ROOT" "$text" )
+  [ "$out" = empty ] || fail "a composer still growing must be waited for, got '$out'"
+  [ "$(herdr_ctrl_u_count "$log")" -eq 0 ] || fail "a payload that was still arriving must not be cleared"
+  pass "fm_backend_herdr_send_text_submit: a composer that is still filling is not refused as a truncated suffix"
+}
+
+# fm-send's doorbell lands on a pane that is mid-turn. A swallowed Enter left
+# the doorbell sitting in the composer while the busy footer made the old
+# queued-Enter rule report it delivered; Claude moves a queued message out of
+# the composer, so a payload still in it was never submitted.
+test_send_text_submit_claude_swallowed_enter_on_a_busy_pane_is_pending_not_delivered() {
+  local dir log resp fb out enter_count text n screen
+  dir="$TMP_ROOT/submit-claude-busy-swallowed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  text=": Firstmate instruction waiting: list the inbox."
+  herdr_submit_claude_prefix "$resp" "$text"
+  screen=$(herdr_auto_mode_screen "❯ $text")
+  herdr_auto_mode_screen '❯ ' > "$resp/2.out"
+  printf '%s\n' "$screen" > "$resp/4.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/5.out"
+  # Each composer state read is a viewport read plus the identity probe a
+  # rule-pair composer needs (claude and pi draw the same pair), then the
+  # composer content read that tells a swallowed Enter from a queued one.
+  for n in 8 10 12 14; do printf '%s\n' "$screen" > "$resp/$n.out"; done
+  for n in 9 13; do printf '{"result":{"agent":{"agent":"claude","agent_status":"working"}}}\n' > "$resp/$n.out"; done
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 2 0.01 0.01' "$ROOT" "$text" )
+  [ "$out" = pending ] || fail "a doorbell still in a busy Claude composer after every Enter must read pending, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 2 ] || fail "the retry budget should have been spent on Enter, sent $enter_count"
+  pass "fm_backend_herdr_send_text_submit: a payload still in a busy Claude composer after Enter is pending, never a queued delivery"
+}
+
+test_send_text_submit_claude_queued_behind_a_busy_turn_is_delivered() {
+  local dir log resp fb out enter_count text screen
+  dir="$TMP_ROOT/submit-claude-busy-queued"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  text=": Firstmate instruction waiting: list the inbox."
+  herdr_submit_claude_prefix "$resp" "$text"
+  herdr_auto_mode_screen '❯ ' > "$resp/2.out"
+  herdr_auto_mode_screen "❯ $text" > "$resp/4.out"
+  printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/7.out"
+  # After Enter Claude has queued the message: the composer is empty and the
+  # footer carries the queued-messages hint, which the shared classifier reads
+  # as pending.
+  screen=$(herdr_auto_mode_screen '❯ ' '' 'Press up to edit queued messages')
+  printf '%s\n' "$screen" > "$resp/8.out"
+  printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/9.out"
+  printf '%s\n' "$screen" > "$resp/10.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 3 0.01 0.01' "$ROOT" "$text" )
+  [ "$out" = empty ] || fail "a message Claude queued behind a busy turn is delivered, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "a queued message needs no second Enter, sent $enter_count"
+  pass "fm_backend_herdr_send_text_submit: a message queued behind a busy Claude turn is delivered on the first Enter"
+}
+
 test_send_text_submit_lone_paste_placeholder_submits_the_long_payload() {
   local dir log resp fb out enter_count text
   dir="$TMP_ROOT/submit-paste-placeholder"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -5945,6 +6126,12 @@ test_send_text_submit_accepts_marked_payloads_whose_read_back_drops_u2063
 test_send_text_submit_refuses_marked_digest_missing_its_head
 test_composer_state_claude_slash_popup_pushes_composer_above_tail_window
 test_send_text_submit_claude_slash_popup_composer_is_still_proven_and_submitted
+test_send_text_submit_claude_proof_waits_for_a_late_render
+test_send_text_submit_claude_proof_refusal_is_bounded_and_explained
+test_send_text_submit_claude_proof_refuses_a_stable_suffix_without_waiting_it_out
+test_send_text_submit_claude_proof_does_not_mistake_growth_for_a_stable_suffix
+test_send_text_submit_claude_swallowed_enter_on_a_busy_pane_is_pending_not_delivered
+test_send_text_submit_claude_queued_behind_a_busy_turn_is_delivered
 test_send_text_submit_lone_paste_placeholder_submits_the_long_payload
 test_send_text_submit_multiline_paste_placeholder_submits_the_long_payload
 test_send_text_submit_refuses_placeholder_followed_by_a_literal_remainder
