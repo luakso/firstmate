@@ -262,6 +262,60 @@ test_originless_pool_launches_without_a_freshness_fetch() {
   pass "an origin-less pooled worktree launches as-is, skipping the freshness gate"
 }
 
+# A sandboxed Claude worker gets a per-task clone (bin/fm-task-clone-lib.sh)
+# instead of a pool slot. Its own config is a relative path in `git config
+# --show-origin`, so the origin probe must read it from the clone, not from the
+# directory fm-spawn happens to run in, which can be a repository with an origin.
+run_clone_spawn() {  # <id> [fm-spawn args...]; runs from a decoy repository that has an origin
+  local id=$1 decoy="$CASE_DIR/decoy"
+  shift
+  printf 'claude\n' > "$HOME_DIR/config/crew-harness"
+  printf 'on\n' > "$HOME_DIR/config/claude-sandbox"
+  printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
+  git init --quiet -b main "$decoy"
+  git -C "$decoy" remote add origin "file://$CASE_DIR/decoy-origin.git"
+  (
+    cd "$decoy" || exit 1
+    FM_TASK_CLONE_ROOT="$CASE_DIR/clones" fm_test_run_spawn "$HOME_DIR" "$CASE_DIR/clones/$id/project" \
+      "$FAKEBIN_DIR" "$id" "$PROJECT_DIR" "$@"
+  )
+}
+
+test_originless_task_clone_launches_without_a_freshness_fetch() {
+  local rec id out status clone
+  id='clone-originless-r1'
+  rec=$(make_originless_case clone-originless "$id")
+  read_case_record "$rec"
+  clone="$CASE_DIR/clones/$id/project"
+
+  out=$(run_clone_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  expect_code 0 "$status" "a sandboxed spawn should launch from a task clone of a project with no origin"$'\n'"$out"
+  assert_contains "$out" "spawned $id" "the sandboxed spawn did not report success for the origin-less project"
+  assert_not_contains "$out" "could not fetch origin" \
+    "the sandboxed spawn attempted a freshness fetch against a nonexistent origin"
+  assert_grep "worktree=$clone" "$HOME_DIR/state/$id.meta" "the spawn did not record the task clone"
+  [ "$(git -C "$clone" rev-parse HEAD)" = "$INITIAL_SHA" ] \
+    || fail "the task clone did not start at the project's current commit"
+  pass "a sandboxed spawn launches a project with no origin from its task clone"
+}
+
+test_task_clone_with_origin_still_refreshes_its_base() {
+  local rec id out status clone current
+  id='clone-origin-r1'
+  rec=$(make_case clone-origin "$id")
+  read_case_record "$rec"
+  clone="$CASE_DIR/clones/$id/project"
+
+  out=$(run_clone_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  expect_code 0 "$status" "a sandboxed spawn should launch from a task clone of a project with an origin"$'\n'"$out"
+  current=$(git -C "$clone" rev-parse origin/main)
+  [ "$(git -C "$clone" rev-parse HEAD)" = "$current" ] || fail "the task clone did not refresh to current origin/main"
+  [ "$current" != "$INITIAL_SHA" ] || fail "fixture did not prove origin/main advanced past the clone's base"
+  pass "a sandboxed spawn still refreshes a task clone's base from the project's origin"
+}
+
 test_originless_dirty_pool_refuses_without_discarding_work() {
   local rec id out status before
   id='pool-originless-dirty-r1'
@@ -754,6 +808,8 @@ test_unresolved_remote_default_refuses_pool
 test_unreachable_origin_refuses_stale_pool_base
 test_originless_pool_launches_without_a_freshness_fetch
 test_originless_dirty_pool_refuses_without_discarding_work
+test_originless_task_clone_launches_without_a_freshness_fetch
+test_task_clone_with_origin_still_refreshes_its_base
 test_origin_config_without_url_refuses_pool
 test_empty_origin_config_section_refuses_pool
 test_empty_only_included_origin_config_section_launches_pool

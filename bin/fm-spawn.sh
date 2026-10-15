@@ -3618,6 +3618,8 @@ spawn_worktree_has_origin_config() { # <worktree>
   git -C "$worktree" config --get-regexp '^remote\.origin\.' >/dev/null 2>&1 && return 0
   while IFS=$'\t' read -r origin key; do
     case $origin in file:*) config=${origin#file:} ;; *) continue ;; esac
+    # --show-origin prints a repository's own config relative to the worktree git ran in, so anchor it there rather than at the caller's cwd, which may be another repository with an origin.
+    case $config in /*) ;; *) config="$worktree/$config" ;; esac
     [ -f "$config" ] || continue
     case $seen in *$'\n'"$config"$'\n'*) continue ;; esac
     seen+="$config"$'\n'
