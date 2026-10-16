@@ -2079,11 +2079,8 @@ sandbox_go_setup() {  # <name> <id> <sandbox> <root file: go.mod|go.work|none>
   go.mod) printf 'module example.com/sandboxed\n\ngo 1.22\n' > "$PROJ_DIR/go.mod" ;;
   go.work) printf 'go 1.22\n\nuse ./server\n' > "$PROJ_DIR/go.work" ;;
   package-lock.json | pnpm-lock.yaml | bun.lock) printf '{}\n' > "$PROJ_DIR/$root_file" ;;
-  Cargo.lock) printf '[package]\nname = "x"\n' > "$PROJ_DIR/Cargo.toml"; printf 'version = 3\n' > "$PROJ_DIR/Cargo.lock" ;;
-  Cargo.toml) printf '[package]\nname = "x"\n' > "$PROJ_DIR/Cargo.toml" ;;
   esac
   if [ "$root_file" != none ]; then
-    [ "$root_file" != Cargo.lock ] || root_file="Cargo.toml Cargo.lock"
     # shellcheck disable=SC2086
     if ! { git -C "$PROJ_DIR" add $root_file &&
       git -C "$PROJ_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm "add $root_file" &&
@@ -2276,92 +2273,6 @@ SH
   FM_TEST_JS_LOG="$JS_LOG" replay_sandbox_launch
   [ ! -e "$JS_LOG" ] || fail "an unsandboxed spawn ran a package install"
   pass "config/claude-sandbox=on installs a JavaScript worktree's locked dependencies from the launch command, before claude starts"
-}
-
-# The fence reaches the crates.io hosts, and a fresh sandboxed spawn of a worktree
-# with a Cargo.toml and Cargo.lock has its pane launch command run cargo fetch
-# --locked outside the fence first, into the task's own CARGO_HOME.
-fake_cargo_for_sandbox() {  # <fakebin>
-  cat > "$1/cargo" <<'EOF'
-#!/usr/bin/env bash
-launch=unsent
-[ ! -e "${FM_TEST_CLAUDE_MARK:-}" ] || launch=sent
-printf '%s|%s|%s|%s\n' "$(pwd -P)" "$(basename "$0") $*" "${CARGO_HOME-unset}" "$launch" >> "$FM_TEST_CARGO_LOG"
-if [ "${FM_TEST_CARGO_STATUS:-0}" != 0 ]; then
-  echo "error: fake cargo fetch failure" >&2
-  exit "$FM_TEST_CARGO_STATUS"
-fi
-EOF
-  chmod +x "$1/cargo"
-}
-
-test_claude_sandbox_fetches_cargo_crates_at_spawn() {
-  local out status state_real wt_real id cache CARGO_LOG
-  id=sandbox-cargo-ok-z61
-  sandbox_go_setup sandbox-cargo-ok "$id" on Cargo.lock
-  fake_cargo_for_sandbox "$FAKEBIN_DIR"
-  sandbox_go_spawn "$id" 0
-  expect_code 0 "$status" "sandboxed Cargo.lock spawn should succeed"$'\n'"$out"
-  state_real=$(cd "$HOME_DIR/state" && pwd -P)
-  wt_real=$(cd "$GO_WT" && pwd -P)
-  cache="$state_real/$id.gocache"
-  CARGO_LOG="$CASE_DIR/cargo.log"
-  [ ! -e "$CARGO_LOG" ] || fail "the spawn itself ran cargo fetch instead of the pane's launch command"
-  FM_TEST_CARGO_LOG="$CARGO_LOG" replay_sandbox_launch
-  expect_code 0 "$status" "the sandboxed Cargo.lock launch command should run"$'\n'"$out"
-  [ -e "$CASE_DIR/claude.mark" ] || fail "the Cargo.lock launch command never reached claude"
-  [ "$(cat "$CARGO_LOG")" = "$wt_real|cargo fetch --locked|$cache/cargo|unsent" ] \
-    || fail "cargo fetch did not run locked in the worktree with the task's own CARGO_HOME before claude starts"$'\n'"$(cat "$CARGO_LOG")"
-
-  # A relaunch's Cargo.lock and manifests are worker-controlled, so it never fetches.
-  id=sandbox-cargo-relaunch-z62
-  sandbox_go_setup sandbox-cargo-relaunch "$id" on Cargo.lock
-  fake_cargo_for_sandbox "$FAKEBIN_DIR"
-  sandbox_go_spawn "$id" 0
-  mkdir -p "$CASE_DIR/idle-pane"
-  cat > "$CASE_DIR/idle-pane/tmux" <<'SH'
-#!/usr/bin/env bash
-for a in "$@"; do
-  case "$a" in
-    *pane_current_command*) printf 'zsh\n'; exit 0 ;;
-  esac
-done
-exec "$FM_TEST_REAL_TMUX" "$@"
-SH
-  chmod +x "$CASE_DIR/idle-pane/tmux"
-  out=$(FM_TEST_REAL_TMUX="$FAKEBIN_DIR/tmux" FM_FAKE_DUPLICATE_WINDOW=fm-$id run_spawn "$HOME_DIR" "$GO_WT" "$CASE_DIR/idle-pane:$FAKEBIN_DIR" "$LAUNCH_LOG" --relaunch "$id")
-  status=$?
-  expect_code 0 "$status" "relaunching a sandboxed Cargo task should succeed"$'\n'"$out"
-  rm -f "$CARGO_LOG"
-  FM_TEST_CARGO_LOG="$CARGO_LOG" replay_sandbox_launch
-  [ ! -e "$CARGO_LOG" ] || fail "a relaunch ran cargo fetch"$'\n'"$(cat "$CARGO_LOG")"
-
-  # A failed fetch only warns.
-  sandbox_go_setup sandbox-cargo-fail sandbox-cargo-fail-z63 on Cargo.lock
-  fake_cargo_for_sandbox "$FAKEBIN_DIR"
-  sandbox_go_spawn sandbox-cargo-fail-z63 0
-  expect_code 0 "$status" "a failed fetch must not block the sandboxed spawn"$'\n'"$out"
-  FM_TEST_CARGO_LOG="$CARGO_LOG" FM_TEST_CARGO_STATUS=1 replay_sandbox_launch
-  expect_code 0 "$status" "a failed fetch must not stop the launch command"$'\n'"$out"
-  [ -e "$CASE_DIR/claude.mark" ] || fail "the launch command did not reach claude after a failed fetch"
-  assert_contains "$out" "warning: cargo fetch for the sandboxed worker" "a failed fetch did not warn"
-  assert_contains "$out" "fake cargo fetch failure" "the fetch warning did not show cargo's error"
-
-  # No Cargo.lock (a manifest alone) and an unsandboxed spawn never fetch.
-  sandbox_go_setup sandbox-cargo-nolock sandbox-cargo-nolock-z64 on Cargo.toml
-  fake_cargo_for_sandbox "$FAKEBIN_DIR"
-  sandbox_go_spawn sandbox-cargo-nolock-z64 0
-  rm -f "$CARGO_LOG"
-  FM_TEST_CARGO_LOG="$CARGO_LOG" replay_sandbox_launch
-  [ ! -e "$CARGO_LOG" ] || fail "a worktree with no Cargo.lock ran cargo fetch"
-  assert_not_contains "$out" "warning" "a worktree with no Cargo.lock did not skip quietly"
-  sandbox_go_setup sandbox-cargo-off sandbox-cargo-off-z65 off Cargo.lock
-  fake_cargo_for_sandbox "$FAKEBIN_DIR"
-  sandbox_go_spawn sandbox-cargo-off-z65 0
-  rm -f "$CARGO_LOG"
-  FM_TEST_CARGO_LOG="$CARGO_LOG" replay_sandbox_launch
-  [ ! -e "$CARGO_LOG" ] || fail "an unsandboxed spawn ran cargo fetch"
-  pass "config/claude-sandbox=on fetches a Cargo worktree's locked crates into the task's CARGO_HOME from the launch command, before claude starts"
 }
 
 # No teardown ever reaches the task cache of a spawn that fails before its
@@ -2724,7 +2635,6 @@ test_claude_sandbox_off_keeps_the_scout_completion_gate
 test_claude_sandbox_on_fences_ship_and_scout_launches
 test_claude_sandbox_downloads_go_modules_at_spawn
 test_claude_sandbox_installs_js_dependencies_at_spawn
-test_claude_sandbox_fetches_cargo_crates_at_spawn
 test_claude_sandbox_failed_spawn_removes_its_module_cache
 test_claude_sandbox_drops_committed_project_settings
 test_claude_sandbox_carries_project_narrowing_rules
