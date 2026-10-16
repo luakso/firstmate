@@ -1956,7 +1956,7 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
         allowUnsandboxedCommands: false,
         excludedCommands: ["git push", "git push *", "gh", "gh *", "gh-axi", "gh-axi *", "no-mistakes", "no-mistakes *"],
         filesystem: {allowWrite: [$status, $inbox, $data, $tmp, $gocache], denyWrite: [$opinbox, $skills]},
-        network: {strictAllowlist: true, allowedDomains: ["proxy.golang.org", "sum.golang.org", "registry.npmjs.org"]}
+        network: {strictAllowlist: true, allowedDomains: ["proxy.golang.org", "sum.golang.org", "registry.npmjs.org", "index.crates.io", "static.crates.io"]}
       }}')
     [ "$(printf '%s' "$settings" | jq -cS .)" = "$(printf '%s' "$want" | jq -cS .)" ] \
       || fail "claude $kind sandbox settings differ"$'\n'"expected: $want"$'\n'"actual:   $settings"
@@ -1973,6 +1973,9 @@ test_claude_sandbox_on_fences_ship_and_scout_launches() {
     assert_write_grant_excludes_shared_git "$kind" "$settings" "$clone"
     assert_contains "$launch" "export GOCACHE='$state_real/$id.gocache/build' GOMODCACHE='$state_real/$id.gocache/mod'; " \
       "claude $kind launch did not move the Go caches into the task's own disk-backed cache directory"
+    assert_contains "$launch" "export CARGO_HOME='$state_real/$id.gocache/cargo'; " \
+      "claude $kind launch did not point CARGO_HOME at the task's own cache directory"
+    [ -d "$HOME_DIR/state/$id.gocache/cargo" ] || fail "claude $kind spawn did not create the cargo home directory"
     assert_contains "$launch" "claude --permission-mode auto " "the sandboxed launch must run under auto mode"
     assert_not_contains "$launch" "--setting-sources" \
       "claude $kind launch dropped a setting source for a worktree without project settings"
@@ -2078,7 +2081,8 @@ sandbox_go_setup() {  # <name> <id> <sandbox> <root file: go.mod|go.work|none>
   package-lock.json | pnpm-lock.yaml | bun.lock) printf '{}\n' > "$PROJ_DIR/$root_file" ;;
   esac
   if [ "$root_file" != none ]; then
-    if ! { git -C "$PROJ_DIR" add "$root_file" &&
+    # shellcheck disable=SC2086
+    if ! { git -C "$PROJ_DIR" add $root_file &&
       git -C "$PROJ_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm "add $root_file" &&
       git -C "$PROJ_DIR" push -q origin main; }; then
       fail "could not publish $root_file to the fixture's origin"
