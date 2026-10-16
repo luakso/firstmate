@@ -349,7 +349,9 @@
 #   and no direct proxy fallback (a failure only warns; a relaunch never
 #   downloads, since the worker controls its go.mod and cache), likewise
 #   installs a root package-lock.json, pnpm-lock.yaml, or bun.lock frozen with
-#   lifecycle scripts off (claude_sandbox_js_install_command), and pre-creates
+#   lifecycle scripts off (claude_sandbox_js_install_command), runs cargo fetch
+#   --locked for a root Cargo.toml with a Cargo.lock into the task's own CARGO_HOME
+#   (claude_sandbox_cargo_fetch_command), and pre-creates
 #   the task's status log so its append grant has a file to cover. When the
 #   worktree carries a .claude/settings.json, whatever it holds, the launch passes
 #   --setting-sources user,local so its hooks and helper commands never run
@@ -2980,13 +2982,18 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
 # helper in the status command is not granted: it needs lock and offset files
 # across state/, the command already tolerates its failure, and the watcher's
 # per-poll capture records the same line. The Go module proxy and checksum
-# database and the npm registry are the only allowed hosts; the proxy's module zip
+# database, the npm registry, and the crates.io index and download hosts are the
+# only allowed hosts; the proxy's module zip
 # downloads redirect to a host the fence refuses, so
 # claude_sandbox_go_mod_download_command fills the per-task module cache at spawn
 # instead. The registry serves its package tarballs from its own host, so it needs
 # no companion host, and it stays allowed so a worker in a repo with no lockfile
 # yet can run its first install inside the fence; with a lockfile,
 # claude_sandbox_js_install_command installs the locked dependencies at spawn.
+# crates.io splits its sparse index (index.crates.io) from the crate downloads
+# (static.crates.io), so both are allowed, and CARGO_HOME points at the task's own
+# state/<id>.gocache/cargo, so cargo never needs write access to ~/.cargo; with a
+# Cargo.lock, claude_sandbox_cargo_fetch_command fills it at spawn.
 # excludedCommands run git push, gh, gh-axi, and no-mistakes outside the fence
 # under auto mode, which config/claude-sandbox=on requires, because they need
 # the D-Bus keyring login and the no-mistakes daemon socket. An excluded git
@@ -3000,7 +3007,7 @@ claude_sandbox_settings() {  # <state-dir> <data-dir> <task-tmp> <code-root> <ta
   tmp_real=$(cd "$task_tmp" && pwd -P) || return 1
   root_real=$(cd "$code_root" && pwd -P) || return 1
   mkdir -p "$state_real/$id.inbox/handled" "$data_real/$id" \
-    "$state_real/$id.gocache/build" "$state_real/$id.gocache/mod" || return 1
+    "$state_real/$id.gocache/build" "$state_real/$id.gocache/mod" "$state_real/$id.gocache/cargo" || return 1
   : >>"$state_real/$id.status" || return 1
   json=$(jq -cn --arg opinbox "$state_real/operational-inbox" --arg skills "$root_real/.agents/skills" --argjson narrow "$narrow" '{sandbox: {
       enabled: true,
@@ -3008,7 +3015,7 @@ claude_sandbox_settings() {  # <state-dir> <data-dir> <task-tmp> <code-root> <ta
       allowUnsandboxedCommands: false,
       excludedCommands: ["git push", "git push *", "gh", "gh *", "gh-axi", "gh-axi *", "no-mistakes", "no-mistakes *"],
       filesystem: {allowWrite: $ARGS.positional, denyWrite: ([$opinbox, $skills] + ($narrow.denyWrite // []))},
-      network: {strictAllowlist: true, allowedDomains: ["proxy.golang.org", "sum.golang.org", "registry.npmjs.org"]}
+      network: {strictAllowlist: true, allowedDomains: ["proxy.golang.org", "sum.golang.org", "registry.npmjs.org", "index.crates.io", "static.crates.io"]}
     }}
     | if ($narrow.denyRead // [] | length) > 0 then .sandbox.filesystem.denyRead = $narrow.denyRead else . end
     | if ($narrow.deniedDomains // [] | length) > 0 then .sandbox.network.deniedDomains = $narrow.deniedDomains else . end
@@ -3121,6 +3128,33 @@ claude_sandbox_js_install_command() {  # <worktree> <gocache-dir>
     return 0
   fi
   printf '%s' "(cd $(shell_quote "$wt") && env BUN_INSTALL_CACHE_DIR=$(shell_quote "$gocache/bun") $timeout_cmd 180 $tool $install_args </dev/null) || echo 'warning: $tool install for the sandboxed worker failed or timed out; launching anyway, and dependencies it did not install must be installed inside the fence' >&2; "
+}
+
+# config/claude-sandbox=on (header above): the fence reaches index.crates.io and
+# static.crates.io, and a locked fetch at spawn spares the worker a cold registry
+# download inside it. When a freshly spawned worktree root holds both a Cargo.toml
+# and a Cargo.lock, print a shell fragment that runs cargo fetch --locked there,
+# outside the fence (it runs no build script or proc macro), into the task's own
+# CARGO_HOME under <gocache-dir>/cargo. Like the Go download it is part of the
+# pane's own launch command, ahead of claude, never applies to a relaunch, is
+# bounded by a timeout, and only warns on any failure. A worktree with no
+# Cargo.lock is skipped quietly and left for the worker's own first build.
+claude_sandbox_cargo_fetch_command() {  # <worktree> <gocache-dir>
+  local wt=$1 gocache=$2 timeout_cmd=
+  [ -f "$wt/Cargo.toml" ] && [ -f "$wt/Cargo.lock" ] || return 0
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "warning: $wt holds a Cargo.lock but cargo is not on PATH; the sandboxed worker starts with an empty crate cache" >&2
+    return 0
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout_cmd=timeout
+  elif command -v gtimeout >/dev/null 2>&1; then
+    timeout_cmd=gtimeout
+  else
+    echo "warning: no timeout command on PATH; skipping the sandboxed worker's crate fetch in $wt, so it starts with an empty crate cache" >&2
+    return 0
+  fi
+  printf '%s' "(cd $(shell_quote "$wt") && env CARGO_HOME=$(shell_quote "$gocache/cargo") $timeout_cmd 180 cargo fetch --locked </dev/null) || echo 'warning: cargo fetch for the sandboxed worker failed or timed out; launching anyway, and crates it did not fetch must download inside the fence' >&2; "
 }
 
 resolved_existing_dir() {
@@ -5549,9 +5583,11 @@ fi
 # The sandboxed worker's Go caches (claude_sandbox_settings above) ride the
 # launch command as an export, so they survive a filtered launch environment too.
 if [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
+  [ "$RELAUNCH" -eq 1 ] || LAUNCH="$(claude_sandbox_cargo_fetch_command "$WT" "$STATE_REAL/$ID.gocache")$LAUNCH"
   [ "$RELAUNCH" -eq 1 ] || LAUNCH="$(claude_sandbox_js_install_command "$WT" "$STATE_REAL/$ID.gocache")$LAUNCH"
   [ "$RELAUNCH" -eq 1 ] || LAUNCH="$(claude_sandbox_go_mod_download_command "$WT" "$STATE_REAL/$ID.gocache")$LAUNCH"
   LAUNCH="export npm_config_cache=$(shell_quote "$STATE_REAL/$ID.gocache/npm") npm_config_store_dir=$(shell_quote "$STATE_REAL/$ID.gocache/pnpm") BUN_INSTALL_CACHE_DIR=$(shell_quote "$STATE_REAL/$ID.gocache/bun"); $LAUNCH"
+  LAUNCH="export CARGO_HOME=$(shell_quote "$STATE_REAL/$ID.gocache/cargo"); $LAUNCH"
   LAUNCH="export GOCACHE=$(shell_quote "$STATE_REAL/$ID.gocache/build") GOMODCACHE=$(shell_quote "$STATE_REAL/$ID.gocache/mod"); $LAUNCH"
 fi
 if [ "$KEEP_AI_TRAILERS" = 0 ]; then
