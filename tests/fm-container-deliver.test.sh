@@ -19,7 +19,11 @@ fm_git_identity 'Contained Builder' builder@example.invalid
 URL=https://github.com/acme/widget.git
 
 # A fake gh-axi: logs argv and cwd, keeps each --body-file it is handed, and
-# answers from FM_FAKE_GH_* the way gh-axi's TOON output reads.
+# answers from FM_FAKE_GH_* the way gh-axi's TOON output reads. The PR's head
+# is the remote branch, except that the first FM_FAKE_GH_STALE_READS head and
+# check reads model a forge that has not caught up with the push: the first
+# head read fails, later ones name FM_FAKE_GH_STALE_HEAD, and the checks are
+# that head's failed rollup.
 make_fake_gh_axi() {  # <fakebin>
   cat > "$1/gh-axi" <<'SH'
 #!/usr/bin/env bash
@@ -32,7 +36,20 @@ for a in "$@"; do
   [ "$prev" != --body-file ] || cp "$a" "$log.body"
   prev=$a
 done
+stale=no
 case "${1:-} ${2:-}" in
+  'pr checks'|api\ *)
+    reads=$(( $(cat "$log.reads" 2>/dev/null || echo 0) + 1 ))
+    printf '%s\n' "$reads" > "$log.reads"
+    [ "$reads" -gt "${FM_FAKE_GH_STALE_READS:-0}" ] || stale=$reads ;;
+esac
+case "${1:-} ${2:-}" in
+  api\ *)
+    case "$stale" in
+      no) git --git-dir="${FM_FAKE_GH_REMOTE:?}" rev-parse refs/heads/fm/t1 ;;
+      1) printf 'error: "HTTP 502"\n'; exit 1 ;;
+      *) printf '%s\n' "${FM_FAKE_GH_STALE_HEAD:?}" ;;
+    esac ;;
   'pr list')
     if [ -n "${FM_FAKE_GH_OPEN_PR:-}" ]; then
       printf 'count: 1\npull_requests[1]{number,title,state,author,draft,review,url}:\n  %s,old,open,me,no,none,%s\n' "${FM_FAKE_GH_OPEN_PR##*/}" "$FM_FAKE_GH_OPEN_PR"
@@ -44,7 +61,9 @@ case "${1:-} ${2:-}" in
   'pr view') printf 'pull_request:\n  number: %s\n  draft: %s\n' "$3" "${FM_FAKE_GH_DRAFT:-no}" ;;
   'pr ready') printf 'ready:\n  number: %s\n' "$3" ;;
   'pr checks')
-    case "${FM_FAKE_GH_CHECKS:-green}" in
+    checks=${FM_FAKE_GH_CHECKS:-green}
+    [ "$stale" = no ] || checks=failed
+    case "$checks" in
       green) printf 'summary: "2 passed, 0 failed, 2 total"\nchecks[2]{name,conclusion}:\n  build,pass\n  "cargo deny",pass\n'; exit 0 ;;
       failed) printf 'summary: "1 passed, 1 failed, 2 total"\nchecks[2]{name,conclusion}:\n  build,fail\n  lint,pass\n'; exit 1 ;;
       none) printf 'checks: "0 passed, 0 failed, no check results reported for the PR head commit"\n'; exit 1 ;;
@@ -142,7 +161,7 @@ write_meta() {  # [key=value overrides...]
 deliver() {  # [args...]
   FM_ROOT_OVERRIDE='' FM_HOME="$D_HOME" FM_STATE_OVERRIDE="$D_HOME/state" FM_DATA_OVERRIDE="$D_HOME/data" \
     FM_CONFIG_OVERRIDE="$D_HOME/config" FM_PROJECTS_OVERRIDE="$D_HOME/projects" \
-    GIT_CONFIG_GLOBAL="$D/gitconfig" FM_FAKE_GH_LOG="$D_LOG" \
+    GIT_CONFIG_GLOBAL="$D/gitconfig" FM_FAKE_GH_LOG="$D_LOG" FM_FAKE_GH_REMOTE="$D/remote.git" \
     FM_CONTAINER_DELIVER_CI_INTERVAL=1 FM_CONTAINER_DELIVER_CI_GRACE="${GRACE:-0}" \
     PATH="$D_FAKEBIN:$PATH" "$DELIVER" t1 "$@" 2>&1
 }
@@ -169,6 +188,7 @@ assert_last_status() {  # <glob> <msg>
 expect_refusal() {  # <label> <expected-text> [args...]
   local label=$1 want=$2 out status
   shift 2
+  : > "$D_EXEC"
   out=$(deliver "$@")
   status=$?
   expect_code 1 "$status" "$label: the delivery did not refuse"$'\n'"$out"
@@ -218,6 +238,24 @@ test_a_redelivery_reuses_the_open_pr_and_a_draft_is_marked_ready() {
   assert_grep "pr ready 5 --repo acme/widget" "$D_LOG" "a draft PR was not marked ready"
   assert_grep "PR https://github.com/acme/widget/pull/5 checks green" "$D_HOME/state/t1.status" "the ready signal does not name the reused PR"
   pass "a redelivery refreshes the branch's open PR and never leaves it a draft"
+}
+
+test_a_redelivery_waits_for_the_pr_head_to_reach_the_pushed_commit() {
+  local out status tip
+  make_world stale-head
+  tip=$(git -C "$D_CLONE" rev-parse HEAD)
+  out=$(FM_FAKE_GH_OPEN_PR=https://github.com/acme/widget/pull/5 FM_FAKE_GH_STALE_READS=3 \
+    FM_FAKE_GH_STALE_HEAD="$D_BASE" deliver --ci-wait 30)
+  status=$?
+  expect_code 0 "$status" "a redelivery whose PR head lags the push should still end green"$'\n'"$out"
+  assert_equals "$tip" "$(remote_branch)" "the remote branch is not the verified tip"
+  assert_last_status "done \[at=[0-9]*\]: PR https://github.com/acme/widget/pull/5 checks green" \
+    "the previous head's failed checks were reported for the pushed commit"
+  assert_no_grep "blocked" "$D_HOME/state/t1.status" "a stale head's failed rollup was reported as blocked"
+  assert_absent "${D_CLONE%/*}/container/ci-failures.md" "failed-job logs were saved for a head that was not pushed"
+  assert_grep "api repos/acme/widget/pulls/5 --jq .head.sha" "$D_LOG" "the PR head was not read through gh-axi"
+  assert_nothing_ran_on_the_host "stale PR head"
+  pass "a redelivery trusts no checks until the PR head is the pushed commit, so an old head's failed rollup is never reported"
 }
 
 test_ci_outcomes_are_reported_without_an_agent() {
@@ -316,6 +354,16 @@ test_each_unverifiable_branch_is_refused() {
   printf '%s\n' "$D/elsewhere/objects" >> "$D_CLONE/.git/objects/info/alternates"
   expect_refusal "a foreign object store" "not only from its project clone's object store"
 
+  make_world commondir
+  mkdir -p "$D/foreign"
+  make_sentinel "$D/credential-helper" "$D_EXEC"
+  make_sentinel "$D/foreign-fsmonitor" "$D_EXEC"
+  git init -q --bare "$D/foreign/repo.git"
+  git --git-dir="$D/foreign/repo.git" config credential.helper "!$D/credential-helper"
+  git --git-dir="$D/foreign/repo.git" config core.fsmonitor "$D/foreign-fsmonitor"
+  printf '%s\n' "$D/foreign/repo.git" > "$D_CLONE/.git/commondir"
+  expect_refusal "a commondir pointing at another repository" "holds a commondir file"
+
   make_world origin
   git -C "$D_CLONE" remote set-url origin https://github.com/attacker/widget.git
   expect_refusal "a different origin" "is not its project clone's origin"
@@ -368,6 +416,7 @@ test_a_diverged_remote_branch_is_never_overwritten() {
 
 test_a_clean_branch_is_pushed_published_and_reported
 test_a_redelivery_reuses_the_open_pr_and_a_draft_is_marked_ready
+test_a_redelivery_waits_for_the_pr_head_to_reach_the_pushed_commit
 test_ci_outcomes_are_reported_without_an_agent
 test_each_unverifiable_branch_is_refused
 test_a_diverged_remote_branch_is_never_overwritten

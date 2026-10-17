@@ -16,23 +16,27 @@
 # credentials and has no route to the forge, so a poisoned dependency running
 # in its build can push nothing anywhere. This script does only the outward
 # steps and never runs project code: no build, test, lint, formatter, git
-# hook, or agent runs here. Every git command that reads the clone runs with
-# hooks and fsmonitor off, replace refs and grafts ignored, and no global or
-# system config, so no filter or helper a host config names runs on
-# worker-written files; only the push reads the host's git config, for its
-# credentials, and it reads objects, never the working tree.
+# hook, or agent runs here. Every git command run against the clone, the push
+# included, is pinned to the clone's own .git by GIT_DIR and GIT_COMMON_DIR, so
+# a commondir file the worker writes later cannot point it at another
+# repository's config. Every git command that reads the clone runs with hooks
+# and fsmonitor off, replace refs and grafts ignored, no global or system
+# config, and no git run inside a submodule, so no filter or helper a host or
+# submodule config names runs on worker-written files; only the push reads the
+# host's git config, for its credentials, and it reads objects, never the
+# working tree, and never recurses into submodules.
 #
 # WHAT IT REFUSES. It publishes nothing unless every check passes, in order:
 #   1. the task record (state/<id>.meta) is a ship with mode=direct-PR and
 #      runtime=container, with a valid recorded branch and clone_base=, and
 #      its worktree is the task clone this home made for it
-#      (fm_task_clone_owned);
+#      (fm_task_clone_owned), whose .git holds no commondir file;
 #   2. the clone is not shallow, and it borrows objects only from its project
 #      clone's object store (objects/info/alternates), so every object it
 #      pushes is one it or its project holds;
 #   3. the clone's HEAD is the recorded branch, refs/heads/<branch>;
 #   4. the clone has no uncommitted change and no untracked file it does not
-#      ignore;
+#      ignore, a submodule counting only by the commit it records;
 #   5. the branch tip descends from clone_base and adds at least one commit;
 #   6. no commit after clone_base, merges included, touches a protected path:
 #      anything under .github/ in any letter case, which holds the workflows,
@@ -56,7 +60,9 @@
 # through the PR, so teardown, relaunch, or a second delivery cannot
 # interleave; it is released before the CI wait.
 # It then reads the PR's checks (gh-axi pr checks) until they settle or
-# --ci-wait runs out, and appends exactly one line to state/<id>.status, the
+# --ci-wait runs out, trusting a read only once gh-axi reports the PR's head
+# commit is the pushed SHA (a stale or unreadable head counts as pending, so a
+# redelivery never reports the previous head's checks), and appends exactly one line to state/<id>.status, the
 # channel the worker reports on, unless the task record changed meanwhile:
 #   done: PR <url> checks green              every check passed
 #   done: PR <url> (no CI checks reported)   none appeared within the grace
@@ -171,13 +177,18 @@ if [ -z "$BRANCH" ] || ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1
   refuse "its record names no valid ship branch"
 fi
 fm_pr_head_valid "$BASE" || refuse "its record has no clone_base= commit, so its branch cannot be checked against where it started"
+if [ -n "$WT" ] && { [ -e "$WT/.git/commondir" ] || [ -L "$WT/.git/commondir" ]; }; then
+  refuse "the clone's .git holds a commondir file, which would point git at another repository's config"
+fi
 fm_task_clone_owned "$WT" "$ID" "$FM_HOME" || refuse "its recorded worktree ${WT:-<missing>} is not the task clone this home made for it"
+CLONE_DIR=$(cd "$WT" 2>/dev/null && pwd -P) || refuse "its recorded worktree $WT is unreadable"
+CLONE_GIT_DIR=$CLONE_DIR/.git
 [ -n "$PROJ" ] && [ -d "$PROJ" ] || refuse "its project clone ${PROJ:-<missing>} is not a directory"
 
 # Read the worker-written clone without anything it could make run here.
 clone_git() {
-  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
-    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR \
+  env -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+    GIT_DIR="$CLONE_GIT_DIR" GIT_COMMON_DIR="$CLONE_GIT_DIR" GIT_WORK_TREE="$CLONE_DIR" \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 \
     GIT_GRAFT_FILE=/dev/null GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 \
     git -C "$WT" -c core.fsmonitor=false -c core.hooksPath=/dev/null "$@"
@@ -213,7 +224,7 @@ fi
 TIP=$(clone_git rev-parse --verify --quiet "refs/heads/$BRANCH^{commit}") || refuse "branch $BRANCH has no commit"
 
 # --- 4. nothing uncommitted ------------------------------------------------------
-dirty=$(clone_git status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null) ||
+dirty=$(clone_git status --porcelain=v1 --untracked-files=all --ignore-submodules=dirty 2>/dev/null) ||
   refuse "the clone's status could not be read"
 [ -z "$dirty" ] || refuse "the clone has uncommitted or untracked changes:"$'\n'"$dirty"
 
@@ -302,11 +313,12 @@ gh_axi() {  # <args...>
 }
 
 # The host's own git config applies to the push alone, for its credentials.
-if ! push_out=$(cd "$PRIVATE" && fm_run_timed 300 env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
-  -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR \
+if ! push_out=$(cd "$PRIVATE" && fm_run_timed 300 env -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+  -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+  GIT_DIR="$CLONE_GIT_DIR" GIT_COMMON_DIR="$CLONE_GIT_DIR" GIT_WORK_TREE="$CLONE_DIR" \
   GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null GIT_TERMINAL_PROMPT=0 \
   git -C "$WT" -c core.fsmonitor=false -c core.hooksPath=/dev/null \
-  push --no-verify --porcelain origin "$TIP:refs/heads/$BRANCH" 2>&1); then
+  push --no-verify --recurse-submodules=no --porcelain origin "$TIP:refs/heads/$BRANCH" 2>&1); then
   die "the push of $TIP to $BRANCH on origin failed; nothing was force-pushed:"$'\n'"$push_out"
 fi
 
@@ -350,8 +362,12 @@ started=$(now)
 verdict=unsettled
 checks_out=
 while [ "$CI_WAIT" -gt 0 ]; do
-  rc=0
-  checks_out=$(gh_axi pr checks "$PR_NUMBER" --repo "$SLUG") || rc=$?
+  rc=8
+  head_out=$(gh_axi api "repos/$SLUG/pulls/$PR_NUMBER" --jq .head.sha) || head_out=
+  if [ "$(printf '%s' "$head_out" | tr -d '"[:space:]')" = "$TIP" ]; then
+    rc=0
+    checks_out=$(gh_axi pr checks "$PR_NUMBER" --repo "$SLUG") || rc=$?
+  fi
   case "$rc" in
     0) verdict=green; break ;;
     1)
