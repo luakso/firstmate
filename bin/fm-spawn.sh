@@ -4915,10 +4915,24 @@ STATE_REAL=$(cd "$STATE" && pwd -P)
 TURNEND="$STATE_REAL/$ID.turn-ended"
 exclude_path() {
   local rel=$1 EXCL
-  # Absolute: a standalone repository such as a task clone answers --git-path
-  # relative to the worktree, which this process's own cwd would misplace.
-  EXCL=$(git -C "$WT" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || true)
-  [ -n "$EXCL" ] || return 0
+  if [ "$CONTAINER_ACTIVE" = 1 ]; then
+    # A contained worker can rewrite anything under its clone's .git, so its
+    # exclude file is found from the clone's shape, never by asking git there,
+    # and is written only through a real info directory and a regular file
+    # (bin/fm-task-clone-lib.sh "CONTAINED CLONES").
+    EXCL="$(cd "$WT" && pwd -P)/.git/info/exclude"
+    if ! fm_task_clone_shaped "$WT" container ||
+      [ -L "${EXCL%/*}" ] || { [ -e "${EXCL%/*}" ] && [ ! -d "${EXCL%/*}" ]; } ||
+      [ -L "$EXCL" ] || { [ -e "$EXCL" ] && [ ! -f "$EXCL" ]; }; then
+      echo "error: task $ID's clone $WT does not have a task clone's .git/info/exclude; refusing to write through it" >&2
+      return 1
+    fi
+  else
+    # Absolute: a standalone repository such as a task clone answers --git-path
+    # relative to the worktree, which this process's own cwd would misplace.
+    EXCL=$(git -C "$WT" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || true)
+    [ -n "$EXCL" ] || return 0
+  fi
   mkdir -p "$(dirname "$EXCL")"
   grep -qxF "$rel" "$EXCL" 2>/dev/null || echo "$rel" >>"$EXCL"
 }
@@ -5751,8 +5765,8 @@ if [ "$CONTAINER_ACTIVE" = 1 ]; then
     "record=$container_record" "skills=$(cd "$FM_ROOT" && pwd -P)/.agents/skills" \
     "token=$(fm_container_token_path "$container_config")" \
     "state=$STATE_REAL" "busy_gen=${BUSY_GEN:-}" "turnend=$TURNEND" \
-    "git_name=$(git -C "$WT" config user.name 2>/dev/null || true)" \
-    "git_email=$(git -C "$WT" config user.email 2>/dev/null || true)" || {
+    "git_name=$(git -C "$PROJ_ABS" config user.name 2>/dev/null || true)" \
+    "git_email=$(git -C "$PROJ_ABS" config user.email 2>/dev/null || true)" || {
     echo "error: could not write the container spec for $ID under $CONTAINER_DIR" >&2
     exit 1
   }

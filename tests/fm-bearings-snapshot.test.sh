@@ -1425,6 +1425,34 @@ test_include_prs_is_the_only_fetch_path() {
   pass "--include-prs is the only path that fetches, and it enriches correctly"
 }
 
+# A contained worker can rewrite its clone's git config, so the repository its
+# PRs are looked up in is its host-owned project clone's origin, never the
+# origin its clone names (bin/fm-task-clone-lib.sh "CONTAINED CLONES").
+test_include_prs_reads_a_contained_task_repository_from_its_project() {
+  local home fakebin
+  home=$(make_home prs-contained); write_fixture "$home"
+  git init -q "$home/projects/widget"
+  git -C "$home/projects/widget" remote add origin https://github.com/acme/widget.git
+  git init -q "$home/projects/widget-clone"
+  git -C "$home/projects/widget-clone" remote add origin https://github.com/attacker/evil.git
+  fm_write_meta "$home/state/boxed.meta" \
+    "window=firstmate:fm-boxed" \
+    "worktree=$home/projects/widget-clone" \
+    "project=$home/projects/widget" \
+    "harness=claude" \
+    "kind=ship" \
+    "mode=direct-PR" \
+    "worktree_layout=clone" \
+    "runtime=container"
+  fakebin=$(make_fakebin "$home"); : > "$home/net.log"
+  run "$home" "$fakebin" --include-prs --all-pr-repos --json >/dev/null
+  grep -q '^gh pr list --repo acme/widget ' "$home/net.log" \
+    || fail "a contained task's PRs were not looked up in its project clone's repository: $(cat "$home/net.log")"
+  ! grep -q 'attacker/evil' "$home/net.log" \
+    || fail "a contained task's PRs were looked up in the repository its clone names: $(cat "$home/net.log")"
+  pass "--include-prs reads a contained task's repository from its project clone, not its clone"
+}
+
 test_include_prs_maps_custom_branch_prefix_to_task() {
   local home fakebin json
   home=$(make_home custom-prefix); write_fixture "$home"
@@ -3403,6 +3431,7 @@ test_open_decision_surfaces_end_to_end
 test_report_pointers_surface
 test_queued_item_prose_never_hides_it
 test_include_prs_is_the_only_fetch_path
+test_include_prs_reads_a_contained_task_repository_from_its_project
 test_include_prs_maps_custom_branch_prefix_to_task
 test_partial_github_failure_degrades
 test_perl_fallback_bounds_github_call

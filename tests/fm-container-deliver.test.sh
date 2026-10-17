@@ -31,9 +31,13 @@ set -u
 log=${FM_FAKE_GH_LOG:?}
 printf '%s\n' "$*" >> "$log"
 printf '%s\n' "$PWD" >> "$log.cwd"
+# Every argument gh-axi's attach scan would take as a file to upload is
+# recorded, whatever position it is in.
 prev=
 for a in "$@"; do
   [ "$prev" != --body-file ] || cp "$a" "$log.body"
+  [ "$prev" != --attach ] || printf '%s\n' "$a" >> "$log.attached"
+  case "$a" in --attach=*) printf '%s\n' "${a#--attach=}" >> "$log.attached" ;; esac
   prev=$a
 done
 stale=no
@@ -83,7 +87,8 @@ printf '%s\n' "$PWD" >> "$log.cwd"
 case "$*" in
   *isDraft*) printf '{"isDraft":false}\n' ;;
   *state,headRefOid,url*)
-    printf 'MERGED\t%s\thttps://github.com/acme/widget/pull/7\n' "$(git --git-dir="${FM_FAKE_GH_REMOTE:?}" rev-parse refs/heads/fm/t1)" ;;
+    printf 'MERGED\t%s\thttps://github.com/acme/widget/pull/7\n' \
+      "${FM_FAKE_GH_PR_HEAD:-$(git --git-dir="${FM_FAKE_GH_REMOTE:?}" rev-parse refs/heads/fm/t1)}" ;;
   *headRefOid*) git --git-dir="${FM_FAKE_GH_REMOTE:?}" rev-parse refs/heads/fm/t1 ;;
 esac
 exit 0
@@ -238,7 +243,7 @@ test_a_clean_branch_is_pushed_published_and_reported() {
   expect_code 0 "$status" "a clean branch should deliver"$'\n'"$out"
   assert_equals "$tip" "$(remote_branch)" "the remote branch is not the verified tip"
   assert_equals "delivered_head=$tip" "$(grep '^delivered_head=' "$D_HOME/state/t1.meta")" "the task record does not name the pushed head"
-  assert_grep "pr create --repo acme/widget --title Add the add function --body-file " "$D_LOG" "the PR was not opened on the project's repository with the commit subject"
+  assert_grep "pr create --repo acme/widget --title=Add the add function --body-file " "$D_LOG" "the PR was not opened on the project's repository with the commit subject"
   assert_grep "--base main --head fm/t1" "$D_LOG" "the PR does not target the default branch from the ship branch"
   assert_no_grep "pr ready" "$D_LOG" "a non-draft PR was marked ready"
   assert_no_grep "$D_CLONE" "$D_LOG.cwd" "gh-axi ran inside the worker's clone"
@@ -468,6 +473,34 @@ test_teardown_refuses_contained_work_host_delivery_never_pushed() {
   pass "teardown refuses a contained clone's commit that host delivery never pushed and that never landed"
 }
 
+test_teardown_accepts_contained_work_landed_in_a_merged_pr_head() {
+  local out status a b c
+  make_world landed-pr
+  make_teardown_fakes
+  a=$(git -C "$D_CLONE" rev-parse HEAD)
+  out=$(deliver --ci-wait 0)
+  expect_code 0 "$?" "the delivery should succeed"$'\n'"$out"
+  write_meta "pr=https://github.com/acme/widget/pull/7" "delivered_head=$a"
+  printf 'pub fn sub(a: i32, b: i32) -> i32 { a - b }\n' >> "$D_CLONE/lib.rs"
+  git -C "$D_CLONE" -c core.hooksPath=/dev/null commit -q -am 'Add sub'
+  b=$(git -C "$D_CLONE" rev-parse HEAD)
+  # The merged PR's head carries B under a review fix the clone never saw, and
+  # the forge holds it only as refs/pull/7/head.
+  git -C "$D_CLONE" -c core.hooksPath=/dev/null push -q "file://$D/remote.git" "$b:refs/heads/scratch"
+  c=$(git -C "$D/remote.git" commit-tree -p "$b" -m 'review fix' "$b^{tree}")
+  git -C "$D/remote.git" update-ref refs/pull/7/head "$c"
+  git -C "$D/remote.git" update-ref -d refs/heads/scratch
+  git -C "$D/remote.git" update-ref refs/heads/main "$c"
+  swap_in_a_hostile_gitdir
+  out=$(FM_FAKE_GH_PR_HEAD=$c host_tool fm-teardown.sh t1)
+  status=$?
+  expect_code 0 "$status" "teardown of contained work landed in the merged PR head should succeed"$'\n'"$out"
+  assert_absent "${D_CLONE%/*}" "teardown left the landed contained task's clone behind"
+  assert_no_grep "$D_CLONE" "$D_LOG.gh.cwd" "a forge CLI ran inside the contained clone"
+  assert_nothing_ran_but_in_the_project_checkout "the teardown"
+  pass "teardown accepts a contained clone whose commit landed in a merged PR head it fetches only into its snapshot"
+}
+
 test_a_contained_local_only_branch_merges_from_a_snapshot() {
   local out status tip
   make_world local-only
@@ -482,6 +515,76 @@ test_a_contained_local_only_branch_merges_from_a_snapshot() {
   assert_equals "$tip" "$(git -C "$D_PROJ" rev-parse main)" "the project's main was not fast-forwarded to the contained branch"
   assert_nothing_ran_but_in_the_project_checkout "the local merge"
   pass "a contained local-only branch is checked and imported from a snapshot, never from its clone's git config"
+}
+
+test_a_worker_written_title_never_becomes_a_flag() {
+  local out status
+  make_world title-flag
+  printf 'host secret\n' > "$D/host-secret"
+  git -C "$D_CLONE" -c core.hooksPath=/dev/null commit -q --amend "--message=--attach=$D/host-secret"
+  write_evidence
+  out=$(deliver --ci-wait 0)
+  status=$?
+  expect_code 0 "$status" "a branch whose subject reads as a flag should still deliver"$'\n'"$out"
+  assert_absent "$D_LOG.attached" "the worker's commit subject made gh-axi upload a host file"
+  assert_grep "pr create --repo acme/widget --title=--attach=$D/host-secret --body-file " "$D_LOG" \
+    "the PR title did not reach gh-axi intact as the title"
+  pass "a worker-written PR title reaches gh-axi only as the title, never as a flag"
+}
+
+test_an_object_store_swapped_for_a_symlink_is_refused_before_it_is_touched() {
+  local victim=
+  make_world objects-race
+  victim="$D/victim"
+  mkdir -p "$victim/info"
+  printf 'host data\n' > "$victim/info/keep"
+  chmod 0444 "$victim/info/keep"
+  # The copy finds a symlink where the check just saw a directory, as a worker
+  # swapping .git/objects between the two would leave it.
+  cat > "$D_FAKEBIN/cp" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = -RP ] && [ "\${3##*/}" = objects ]; then
+  ln -s '$victim' "\$4"
+  exit 0
+fi
+PATH=\${PATH#*:} exec cp "\$@"
+EOF
+  chmod +x "$D_FAKEBIN/cp"
+  expect_refusal "an object store swapped for a symlink" "was not a directory when it was copied"
+  assert_present "$victim/info/keep" "the delivery deleted a host file through the swapped object store"
+  [ ! -w "$victim/info/keep" ] || fail "the delivery made a host file writable through the swapped object store"
+  pass "an object store swapped for a symlink is refused before anything is changed through it"
+}
+
+test_a_superseded_delivery_never_reports() {
+  local out status first_pid
+  make_world overlap
+  FM_FAKE_GH_CHECKS=pending deliver --ci-wait 6 > "$D/first.out" &
+  first_pid=$!
+  for _ in $(seq 1 200); do
+    if grep -q '^delivered_head=' "$D_HOME/state/t1.meta" 2>/dev/null && [ ! -e "$D_HOME/state/.control-t1.lock" ]; then
+      break
+    fi
+    sleep 0.05
+  done
+  grep -q '^delivered_head=' "$D_HOME/state/t1.meta" || fail "the first delivery never reached its CI wait"$'\n'"$(cat "$D/first.out")"
+  printf 'pub fn sub(a: i32, b: i32) -> i32 { a - b }\n' >> "$D_CLONE/lib.rs"
+  git -C "$D_CLONE" -c core.hooksPath=/dev/null commit -q -am 'Add sub'
+  touch -t 203001010000 "$D_CLONE/lib.rs"
+  write_evidence
+  : > "$D_EXEC"
+  out=$(FM_FAKE_GH_CHECKS=failed deliver --ci-wait 30)
+  status=$?
+  expect_code 3 "$status" "the redelivery's failed checks should end in the blocked report"$'\n'"$out"
+  wait "$first_pid"
+  status=$?
+  expect_code 1 "$status" "the superseded delivery should exit without reporting"$'\n'"$(cat "$D/first.out")"
+  assert_contains "$(cat "$D/first.out")" "not reporting" "the superseded delivery does not say why it stayed silent"
+  assert_equals 1 "$(grep -c . "$D_HOME/state/t1.status")" "the superseded delivery appended a status line"
+  assert_last_status "blocked \[at=[0-9]*\]: PR https://github.com/acme/widget/pull/7 checks failed: *" \
+    "the redelivery's failure report is not the task's last word"
+  assert_nothing_ran_on_the_host "overlapping deliveries"
+  pass "a delivery a later one superseded never reports, so it cannot mask the later delivery's CI failure"
 }
 
 test_ci_outcomes_are_reported_without_an_agent() {
@@ -651,7 +754,11 @@ test_a_redelivery_waits_for_the_pr_head_to_reach_the_pushed_commit
 test_worker_written_git_config_never_runs_or_redirects_on_the_host
 test_the_landing_flow_reads_a_contained_clone_as_data
 test_teardown_refuses_contained_work_host_delivery_never_pushed
+test_teardown_accepts_contained_work_landed_in_a_merged_pr_head
 test_a_contained_local_only_branch_merges_from_a_snapshot
+test_a_worker_written_title_never_becomes_a_flag
+test_an_object_store_swapped_for_a_symlink_is_refused_before_it_is_touched
+test_a_superseded_delivery_never_reports
 test_ci_outcomes_are_reported_without_an_agent
 test_each_unverifiable_branch_is_refused
 test_a_diverged_remote_branch_is_never_overwritten

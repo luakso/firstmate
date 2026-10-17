@@ -17,17 +17,23 @@
 # in its build can push nothing anywhere. This script does only the outward
 # steps and never runs project code: no build, test, lint, formatter, git
 # hook, or agent runs here. The worker can rewrite anything under the clone's
-# .git, even swap the directory, so git never runs in the clone's repository.
-# Every git command runs in a private bare repository in a temporary directory,
-# with config this script writes: hooks, fsmonitor, the untracked cache,
-# commit-graphs, multi-pack-indexes, and pack bitmaps off, and no filter or
-# helper defined. It holds a copy of the clone's own object store and borrows
-# only the project clone's. The clone's HEAD, branch ref, index, info/exclude,
-# and config are read as plain data, and the clone itself is touched only as
-# the work tree of the clean-tree status, which runs no git inside a
-# submodule. Only the push reads the host's git config, for its credentials;
-# it pushes to the project clone's origin URL and never recurses into
-# submodules.
+# .git, even swap the directory, so no git command here takes the clone's .git
+# as its repository. Its ownership is checked from files (fm_task_clone_owned
+# with `container`): the marker beside it, a real .git directory with a regular
+# HEAD, and no commondir file. Every git command runs either in the host-owned
+# project clone, to read its origin, objects, and default branch, or in a
+# private bare repository in a temporary directory, with config this script
+# writes: hooks, fsmonitor, the untracked cache, commit-graphs,
+# multi-pack-indexes, and pack bitmaps off, and no filter, driver, or helper
+# defined. That repository holds a copy of the clone's .git/objects without
+# objects/info and borrows only the project clone's object store. The clone's
+# HEAD, branch ref (loose or packed), objects/info/alternates, index,
+# info/exclude, and config, and whether a shallow file exists, are read as plain
+# data; the config only for its origin URL. The clone's directory is git's work
+# tree only for the clean-tree status, which reads that private copy of the
+# index and runs no git inside a submodule. Only the push reads the host's git
+# config, for its credentials; it pushes to the project clone's origin URL and
+# never recurses into submodules.
 #
 # WHAT IT REFUSES. It publishes nothing unless every check passes, in order:
 #   1. the task record (state/<id>.meta) is a ship with mode=direct-PR and
@@ -356,7 +362,7 @@ if [ -n "$PR_URL" ]; then
   edit_out=$(gh_axi pr edit "${PR_URL##*/}" --repo "$SLUG" --body-file "$PRIVATE/body.md") ||
     die "pushed $TIP to $BRANCH, but could not refresh the body of $PR_URL:"$'\n'"$edit_out"
 else
-  create_out=$(gh_axi pr create --repo "$SLUG" --title "$title" --body-file "$PRIVATE/body.md" \
+  create_out=$(gh_axi pr create --repo "$SLUG" --title="$title" --body-file "$PRIVATE/body.md" \
     --base "$BASE_BRANCH" --head "$BRANCH") ||
     die "pushed $TIP to $BRANCH, but could not open its PR:"$'\n'"$create_out"
   PR_URL=$(pr_url_of "$create_out")
@@ -400,6 +406,16 @@ while [ "$CI_WAIT" -gt 0 ]; do
   sleep "$CI_INTERVAL"
 done
 
+# Report only to the incarnation this delivery verified, and only while no later
+# delivery has recorded a newer head.
+report_is_current() {
+  [ "$(meta_value spawn_gen)" = "$SPAWN_GEN" ] && [ "$(meta_value delivered_head)" = "$TIP" ]
+}
+not_reporting() {
+  echo "fm-container-deliver: task $ID's record changed or a later delivery superseded $TIP during the CI wait; not reporting to its status" >&2
+  exit 1
+}
+report_is_current || not_reporting
 failures_file=
 if [ "$verdict" = failed ]; then
   failures_file="$(fm_container_dir "$WT")/ci-failures.md"
@@ -430,11 +446,7 @@ case "$verdict" in
     ;;
 esac
 echo "fm-container-deliver: $line"
-# Report only to the incarnation this delivery verified.
-if [ "$(meta_value spawn_gen)" != "$SPAWN_GEN" ]; then
-  echo "fm-container-deliver: task $ID's record changed during the CI wait; not reporting to its status" >&2
-  exit 1
-fi
+report_is_current || not_reporting
 printf '%s\n' "$line" >>"$STATE/$ID.status" || die "could not append to $STATE/$ID.status"
 [ ! -e "$CONFIG/fleet-ledger" ] || "$SCRIPT_DIR/fm-fleet-ledger.sh" appended "$CONFIG" "$STATE/$ID.status" >/dev/null 2>&1 || true
 [ "$verdict" != failed ] || exit 3

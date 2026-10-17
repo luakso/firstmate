@@ -354,6 +354,25 @@ fm_task_clone_status() {  # <clone-dir> <status-args...>
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git status --ignore-submodules=dirty "$@")
 }
 
+# Print `git status <status-args>` of the contained clone at <clone-dir> as
+# fm_task_clone_status reads it, from a snapshot made for this one read in a
+# private temporary directory that is removed again.
+fm_task_clone_status_once() {  # <clone-dir> <project-clone> <status-args...>
+  local clone=$1 project=$2 dir git_dir out rc=0
+  shift 2
+  dir=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/fm-clone-status.XXXXXXXX") || return 1
+  git_dir="$(cd "$clone" && pwd -P)/.git"
+  if fm_task_clone_snapshot "$git_dir" "$dir/repo.git" "$project" &&
+    fm_task_clone_snapshot_head "$git_dir" && out=$(fm_task_clone_status "$clone" "$@"); then
+    printf '%s' "$out"
+  else
+    rc=1
+  fi
+  chmod -R u+w -- "$dir" 2>/dev/null || true
+  rm -rf -- "$dir"
+  return "$rc"
+}
+
 # Build at <private-git-dir> the bare repository a host tool runs git in instead
 # of <clone-git-dir>: a copy of the clone's own object store without
 # objects/info, refused when it holds anything but regular files and
@@ -393,14 +412,21 @@ fm_task_clone_snapshot() {  # <clone-git-dir> <private-git-dir> <project-clone>
     FM_TASK_CLONE_ERROR="could not create the private repository"
     return 1
   fi
-  if ! fm_run_timed 300 cp -RP -- "$src/objects" "$priv/objects" 2>/dev/null ||
-    ! chmod -R u+w -- "$priv/objects" || ! rm -rf -- "$priv/objects/info"; then
+  if ! fm_run_timed 300 cp -RP -- "$src/objects" "$priv/objects" 2>/dev/null; then
     FM_TASK_CLONE_ERROR="the clone's object store could not be copied"
     return 1
   fi
-  odd=$(find "$priv/objects" ! -type f ! -type d -print 2>/dev/null | head -n 1)
+  if [ ! -d "$priv/objects" ] || [ -L "$priv/objects" ]; then
+    FM_TASK_CLONE_ERROR="the clone's object store was not a directory when it was copied"
+    return 1
+  fi
+  odd=$(find "$priv/objects" -path "$priv/objects/info" -prune -o ! -type f ! -type d -print 2>/dev/null | head -n 1)
   if [ -n "$odd" ]; then
     FM_TASK_CLONE_ERROR="the clone's object store holds ${odd#"$priv/"}, which is not a regular file or directory"
+    return 1
+  fi
+  if ! chmod -R u+w -- "$priv/objects" || ! rm -rf -- "$priv/objects/info"; then
+    FM_TASK_CLONE_ERROR="the clone's object store could not be copied"
     return 1
   fi
   if ! mkdir -p "$priv/objects/info" || ! printf '%s\n' "$objects" >"$priv/objects/info/alternates" ||

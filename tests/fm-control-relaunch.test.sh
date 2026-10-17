@@ -578,6 +578,52 @@ test_container_relaunch_keeps_the_task_in_its_container() {
   pass "fm-control relaunch: a container task relaunches only into its container"
 }
 
+# A contained worker can rewrite anything under its clone's .git, so a relaunch
+# reads that clone as data (bin/fm-task-clone-lib.sh "CONTAINED CLONES"): its
+# checkpoint never runs git in it, the replacement's hook exclude is written
+# straight into its .git/info/exclude, and the container's git identity comes
+# from the project clone.
+test_container_relaunch_reads_its_clone_as_data() {
+  local dir id out rc exec_log spec
+  id=rl-container-data
+  dir=$(new_case container-data "$id")
+  add_clone_ship_task "$dir" "$id" claude
+  sed -i.bak 's/^mode=.*/mode=local-only/' "$dir/home/state/$id.meta" && rm -f "$dir/home/state/$id.meta.bak"
+  printf '%s\n' runtime=container "container=fm-$id-0123456789ab" >> "$dir/home/state/$id.meta"
+  mkdir -p "${ADDED_CLONE%/*}/container/home/.claude"
+  printf '{"hasCompletedOnboarding":true}\n' > "${ADDED_CLONE%/*}/container/home/.claude/.claude.json"
+  add_container_config "$dir"
+  git -C "$dir/proj" config user.name 'Project Builder'
+  exec_log="$dir/host-exec.log"
+  # shellcheck disable=SC2016  # $0 belongs to the sentinel script
+  printf '#!/bin/sh\nprintf "%%s\\n" "$0" >> %s\ncat\n' "'$exec_log'" > "$dir/clone-fsmonitor"
+  chmod +x "$dir/clone-fsmonitor"
+  cat >> "$ADDED_CLONE/.git/config" <<EOF
+[core]
+	fsmonitor = $dir/clone-fsmonitor
+[user]
+	name = Worker Chosen
+EOF
+  printf 'scratch\n' > "$ADDED_CLONE/notes.txt"
+  out=$(run_control "$dir" "$id" relaunch --note "resuming in the container"); rc=$?
+  expect_code 0 "$rc" "a container task's relaunch should succeed"$'\n'"$out"
+  assert_absent "$exec_log" "the relaunch ran the clone's own fsmonitor on the host"
+  spec="${ADDED_CLONE%/*}/container/spec"
+  assert_grep "git_name=Project Builder" "$spec" "the container's git identity does not come from the project clone"
+  assert_no_grep "Worker Chosen" "$spec" "the container's git identity came from the worker's clone config"
+  grep -qxF '.claude/settings.local.json' "$ADDED_CLONE/.git/info/exclude" \
+    || fail "the replacement's hook file is not excluded in the clone"
+  assert_grep "worktree_dirty=yes" "$dir/home/state/$id.control-relaunch" "the checkpoint missed the clone's untracked file"
+
+  rm -rf "$ADDED_CLONE/.git/info"
+  mkdir -p "$dir/host-dir"
+  ln -s "$dir/host-dir" "$ADDED_CLONE/.git/info"
+  out=$(run_control "$dir" "$id" relaunch --note "resuming through a planted link"); rc=$?
+  [ "$rc" -ne 0 ] || fail "a relaunch wrote its hook exclude through a symlinked .git/info"$'\n'"$out"
+  assert_absent "$dir/host-dir/exclude" "the relaunch wrote through the clone's symlinked .git/info onto the host"
+  pass "fm-control relaunch: a container task's clone is read as data and written only through its own .git"
+}
+
 # A container task's agent lives in its container, outside the pane's process
 # tree, so the pane alone reads as a bare shell. Its liveness comes from the
 # recorded container (bin/fm-container-lib.sh "LIVENESS"): interrupt and exit
@@ -2616,6 +2662,7 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_sandboxed_relaunch_drops_committed_project_settings
 test_sandboxed_relaunch_refuses_a_linked_worktree
 test_container_relaunch_keeps_the_task_in_its_container
+test_container_relaunch_reads_its_clone_as_data
 test_container_task_liveness_comes_from_its_container
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text
 test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven
