@@ -22,7 +22,7 @@ Then run the live verification below before the first real task.
 
 ## Build the image
 
-The image definition is [`bin/container/rust-claude.Containerfile`](../bin/container/rust-claude.Containerfile): a pinned Rust toolchain with clippy and rustfmt, cargo-deny, Claude Code, git, and the small in-container contract the runtime relies on (`/usr/bin/tini` as PID 1, `/bin/sh`, `socat`, and a writable `/cargo`).
+The image definition is [`bin/container/rust-claude.Containerfile`](../bin/container/rust-claude.Containerfile): a pinned Rust toolchain with clippy and rustfmt, cargo-deny, cargo-nextest, cargo-machete, lefthook, gitleaks, Claude Code, git, and the small in-container contract the runtime relies on (`/usr/bin/tini` as PID 1, `/bin/sh`, `socat`, `tzdata`, and a writable `/cargo`).
 It is generic and lives in Firstmate rather than in the project, so the agent a container holds can never edit the image that holds it, and one definition serves every Rust project.
 Every version is a required build argument, and the toolchain comes from the project's own `rust-toolchain.toml`, so the image and the project agree on it:
 
@@ -32,6 +32,10 @@ podman build \
   --build-arg RUST_TOOLCHAIN="$(sed -n 's/^channel *= *"\(.*\)"$/\1/p' projects/tokenbook/rust-toolchain.toml)" \
   --build-arg CLAUDE_CODE_VERSION=2.1.296 \
   --build-arg CARGO_DENY_VERSION=0.18.4 \
+  --build-arg CARGO_NEXTEST_VERSION=0.9.148 \
+  --build-arg CARGO_MACHETE_VERSION=0.9.2 \
+  --build-arg LEFTHOOK_VERSION=2.1.16 \
+  --build-arg GITLEAKS_VERSION=8.30.1 \
   -t localhost/tokenbook-dev:latest \
   -f bin/container/rust-claude.Containerfile bin/container
 ```
@@ -45,7 +49,8 @@ A contained worker's pane runs [`bin/fm-container-run.sh`](../bin/fm-container-r
 
 - `--userns=keep-id`, `--read-only` with a private `--tmpfs /tmp`, `--cap-drop all`, `--security-opt no-new-privileges`, and the project file's `--pids-limit` and `--memory`;
 - `--network none`, so nothing but loopback exists;
-- `tini` as PID 1 and a `socat` bridge from `127.0.0.1:3128` to the egress proxy's socket, with `HTTPS_PROXY` and `HTTP_PROXY` pointing at it.
+- `tini` as PID 1 and a `socat` bridge from `127.0.0.1:3128` to the egress proxy's socket, with `HTTPS_PROXY` and `HTTP_PROXY` pointing at it;
+- `TZ` set to the host's zone name, taken from the runner's own `TZ` or from the zoneinfo file the host's `/etc/localtime` links to, so the container's clock reads like the host's; no host file is mounted for it, and a host whose zone cannot be named leaves the container on UTC.
 
 Nothing from the host is mounted except this list, each entry at the same path it has on the host:
 
@@ -81,7 +86,10 @@ With `--network none` and no mounted socket but the proxy's, a container whose p
 
 - Brief delivery, steering, and status reporting work unchanged: the launch doorbell names the mounted brief record, steering doorbells name `state/<id>.inbox` messages the worker reads and moves into `handled/`, and the status command appends to the mounted log; its optional fleet-ledger step finds no `config/` inside and is skipped.
 - Claude's lifecycle hooks run inside the container, where this home's `state/` does not exist, so each one appends a fixed line to the event file, and the runner applies it on the host to the busy-state contract and the turn-ended notification with the incarnation's own gen; after the container exits it records a session end, so a crash never leaves a stale busy record.
-- The runner re-executes itself as `fm-claude-container`, so both backends' liveness probes read the pane as a live Claude agent while the container runs and as agent-free once it exits.
+- The contained Claude runs under Podman's `conmon`, not under the pane's shell, so no pane process tree holds it and the backends' pane probes cannot attribute it.
+  Every liveness decision Firstmate makes for a task whose record carries `runtime=container` - the steering doorbell, `fm-control`, the watcher's dead and stale checks, crew state, relaunch, and teardown - therefore reads its recorded container: the agent is alive only while `podman container inspect` reports the container running and `podman top` lists a Claude process inside it, and dead once the container is gone or exited.
+  The pane's own read still decides whether the endpoint exists, so a gone pane over a container that still runs Claude is never treated as absent.
+  [`bin/fm-container-lib.sh`](../bin/fm-container-lib.sh) "LIVENESS" owns the verdicts.
 - `fm-control` interrupt and exit reach Claude through the pane's terminal as before; Claude's exit ends the container, `--rm` removes it, and the pane returns to its shell, so a relaunch finds an agent-free endpoint and starts a new container under the same name.
 - A relaunch keeps a task in the runtime it was spawned in ([`docs/configuration.md`](configuration.md#refusals-and-relaunch) has the refusals).
 - Teardown removes the task's container with `podman rm --force` before it reaps the task's processes, and refuses to remove the clone while that fails; the clone's task directory, with the container home, event file, spec, and proxy log, is removed with the clone, and the shared `fm-cargo-<project>` volume is kept.
@@ -123,5 +131,7 @@ It spends no model tokens except in step 3.
 3. In that scout, confirm Claude reached its composer without a login, onboarding, trust, or permission dialog, that a turn completed (the task's `state/<id>.busy-state` went busy and back to idle, and `state/<id>.turn-ended` was touched), and that the proxy log lists only allowed hosts.
    Ask it to run `curl https://example.com` and confirm the proxy refuses it.
 4. Check the lifecycle on that scout: steer it with `bin/fm-send.sh` and watch the message move to `handled/`, interrupt it and exit it with `bin/fm-control.sh`, relaunch it, and tear it down; afterwards `podman ps -a --filter label=io.firstmate.task=<id>` must list nothing and `podman volume ls` must still list `fm-cargo-tokenbook`.
+   While `podman top <name> comm args` lists `claude`, the steer must ring the doorbell rather than report that the agent has exited, and the interrupt must report `verified=agent-alive`; the exit must report `stopped`, and the relaunch must confirm its new agent.
+   Before the exit, `podman exec <name> date` must print the host's local time and zone.
 
 Record the dated results, with the Podman, passt, and Claude Code versions, in [`docs/verification/runtime-backends.md`](verification/runtime-backends.md) once they have run.

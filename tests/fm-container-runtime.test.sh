@@ -111,7 +111,7 @@ test_runner_runs_podman_with_exactly_the_isolation_flags() {
   local out status actual expected w
   make_runner_world flags
   w=$W
-  out=$(FM_FAKE_PODMAN_STATUS=7 run_runner env CLAUDE_X=1 claude --flag 'doorbell text' 2>&1)
+  out=$(TZ=Asia/Singapore FM_FAKE_PODMAN_STATUS=7 run_runner env CLAUDE_X=1 claude --flag 'doorbell text' 2>&1)
   status=$?
   expect_code 7 "$status" "the runner must exit with podman's status"$'\n'"$out"
   actual=$(tr '\0' '\n' < "$W_LOG.argv")
@@ -130,7 +130,7 @@ test_runner_runs_podman_with_exactly_the_isolation_flags() {
     -e NO_PROXY= -e no_proxy= \
     -e DISABLE_AUTOUPDATER=1 -e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
     -e ENABLE_CLAUDEAI_MCP_SERVERS=false -e COMPACT_ADVISER_DISABLE=1 \
-    -e FM_TASK_ID=t1 -e TERM=xterm-256color -e LANG=C.UTF-8 \
+    -e FM_TASK_ID=t1 -e TERM=xterm-256color -e LANG=C.UTF-8 -e TZ=Asia/Singapore \
     -e "GIT_AUTHOR_NAME=Test Builder" -e "GIT_COMMITTER_NAME=Test Builder" \
     -e GIT_AUTHOR_EMAIL=builder@example.invalid -e GIT_COMMITTER_EMAIL=builder@example.invalid \
     --mount "type=bind,src=$w/clone/repo,dst=$w/clone/repo" \
@@ -243,7 +243,121 @@ test_runner_reads_as_a_live_claude_agent() {
   . "$ROOT/bin/fm-agent-process-lib.sh"
   assert_equals agent "$(fm_agent_process_classify bash "$argv0" "$parent")" \
     "a pane running the container runner must classify as a live agent"
-  pass "a pane running the container runner reads as a live Claude agent to both liveness probes"
+  pass "a pane running the container runner reads as a harness process, never a bare shell"
+}
+
+# The container's clock follows the host's zone by name (TZ), resolved from
+# the runner's own TZ or from the zoneinfo file the host's localtime links to,
+# with no host file mounted for it; anything that names no zone leaves the
+# container on UTC rather than passing an arbitrary string.
+test_runner_passes_the_host_timezone() {
+  local dir tz
+  make_runner_world timezone
+  TZ=:Europe/Berlin FM_FAKE_PODMAN_STATUS=0 run_runner claude >/dev/null 2>&1 || fail "the runner failed"
+  tr '\0' '\n' < "$W_LOG.argv" | grep -qxF -- "TZ=Europe/Berlin" \
+    || fail "the runner did not pass the host's TZ zone into the container"
+  dir="$TMP_ROOT/timezone-links"
+  mkdir -p "$dir"
+  ln -s /usr/share/zoneinfo/Asia/Singapore "$dir/absolute"
+  ln -s ../usr/share/zoneinfo/America/New_York "$dir/relative"
+  ln -s /var/db/timezone/zoneinfo/Pacific/Auckland "$dir/macos"
+  ln -s /etc/somewhere/else "$dir/elsewhere"
+  : > "$dir/plain"
+  # shellcheck disable=SC2016  # expanded by the inner bash
+  host_tz() { env -u TZ ${2:+TZ="$2"} bash -c '. "$1/bin/fm-container-lib.sh" && fm_container_host_timezone "$2"' _ "$ROOT" "$1"; }
+  assert_equals Asia/Singapore "$(host_tz "$dir/absolute")" "an absolute zoneinfo link did not name its zone"
+  assert_equals America/New_York "$(host_tz "$dir/relative")" "a relative zoneinfo link did not name its zone"
+  assert_equals Pacific/Auckland "$(host_tz "$dir/macos")" "a macOS zoneinfo link did not name its zone"
+  assert_equals Asia/Tokyo "$(host_tz "$dir/absolute" Asia/Tokyo)" "the runner's TZ did not win over localtime"
+  assert_equals America/New_York "$(host_tz "$dir/absolute" ":$dir/relative")" "a TZ naming a zoneinfo link was not resolved"
+  for tz in elsewhere plain missing; do
+    host_tz "$dir/$tz" >/dev/null && fail "localtime '$tz' names no zone but produced one"
+  done
+  # shellcheck disable=SC2016  # a literal TZ value, never expanded
+  for tz in 'Asia/../../etc/passwd' 'x$(id)' 'Europe/Berlin bad' '/usr/share/zoneinfo'; do
+    host_tz "$dir/absolute" "$tz" >/dev/null && fail "TZ '$tz' was passed on although it names no zone"
+  done
+  pass "the container's TZ is the host's zone by name, and nothing else"
+}
+
+# A container task's agent runs under conmon, outside every pane process tree,
+# so its liveness is read from its recorded container (bin/fm-container-lib.sh
+# "LIVENESS"), applied by fm_backend_agent_state to the endpoint's own verdict.
+# The fake podman answers for a container that is absent, running (with the
+# rows `podman top` prints), between states, or unreadable.
+make_fake_podman_state() {  # <fakebin>
+  cat > "$1/podman" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FM_FAKE_PODMAN_CALLS:-/dev/null}"
+case "${1:-} ${2:-}" in
+  'container inspect')
+    case "${FM_FAKE_CTR:-absent}" in
+      absent) echo "Error: no such container ${*: -1}" >&2; exit 125 ;;
+      broken) echo "Error: cannot connect to the podman service" >&2; exit 125 ;;
+      *) printf '%s\n' "$FM_FAKE_CTR" ;;
+    esac ;;
+  'container exists')
+    case "${FM_FAKE_CTR:-absent}" in
+      absent) exit 1 ;;
+      broken) exit 125 ;;
+    esac ;;
+  top\ *)
+    [ -z "${FM_FAKE_TOP_FAIL:-}" ] || { echo "Error: top failed" >&2; exit 125; }
+    printf 'COMMAND     COMMAND\n%s\n' "${FM_FAKE_TOP:-}" ;;
+esac
+exit 0
+SH
+  chmod +x "$1/podman"
+}
+
+test_container_task_liveness_comes_from_its_container() {
+  local dir rows_claude rows_entry rows_versioned
+  dir="$TMP_ROOT/liveness-overlay"
+  mkdir -p "$dir/fakebin" "$dir/state"
+  make_fake_podman_state "$dir/fakebin"
+  printf '%s\n' window=ses:fm-ct endpoint_task_id=ct harness=claude runtime=container container=fm-ct-0123456789ab > "$dir/state/ct.meta"
+  printf '%s\n' window=ses:fm-pt endpoint_task_id=pt harness=claude > "$dir/state/pt.meta"
+  rows_claude=$(printf '%s\n' '/usr/bin/tini /usr/bin/tini -- /bin/sh -c exec "$@" fm-container-entry claude' \
+    'socat socat TCP-LISTEN:3128,bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:/run/fm-proxy.sock' \
+    'claude claude --permission-mode auto --add-dir /state/operational-inbox')
+  rows_entry=$(printf '%s\n' 'tini /usr/bin/tini -- /bin/sh -c exec "$@" fm-container-entry claude' \
+    'sh /bin/sh -c socat & exec "$@" fm-container-entry claude --permission-mode auto')
+  rows_versioned='2.1.296 claude --permission-mode auto'
+  verdict() {  # <target> <endpoint-state> [env...]
+    local target=$1 endpoint=$2
+    shift 2
+    # shellcheck disable=SC2016  # expanded by the inner bash
+    env PATH="$dir/fakebin:$PATH" FM_HOME="$dir" STATE="$dir/state" FM_FAKE_PODMAN_CALLS="$dir/calls" "$@" \
+      bash -c '. "$1/bin/fm-backend.sh" && fm_backend_container_agent_overlay "$2" "$3"' _ "$ROOT" "$target" "$endpoint"
+  }
+  : > "$dir/calls"
+  assert_equals alive "$(verdict ses:fm-ct dead FM_FAKE_CTR=running FM_FAKE_TOP="$rows_claude")" \
+    "a running container holding claude must read alive although its pane holds no agent"
+  assert_grep "fm-ct-0123456789ab" "$dir/calls" "the verdict did not read the task's recorded container"
+  assert_equals alive "$(verdict ses:fm-ct alive FM_FAKE_CTR=running FM_FAKE_TOP="$rows_claude")" "a live pane and container must read alive"
+  assert_equals alive "$(verdict ses:fm-ct dead FM_FAKE_CTR=running FM_FAKE_TOP="$rows_versioned")" \
+    "a version-named claude binary must be recognised by its argv[0]"
+  assert_equals ambiguous "$(verdict ses:fm-ct missing FM_FAKE_CTR=running FM_FAKE_TOP="$rows_claude")" \
+    "a gone pane whose container still runs claude must never read missing"
+  assert_equals unreadable "$(verdict ses:fm-ct unreadable FM_FAKE_CTR=running FM_FAKE_TOP="$rows_claude")" \
+    "an unreadable endpoint must stay unreadable"
+  assert_equals ambiguous "$(verdict ses:fm-ct dead FM_FAKE_CTR=running FM_FAKE_TOP="$rows_entry")" \
+    "a running container with no claude process must not read alive, even when an argument names claude"
+  assert_equals ambiguous "$(verdict ses:fm-ct dead FM_FAKE_CTR=created)" "a starting container must read ambiguous"
+  assert_equals dead "$(verdict ses:fm-ct dead FM_FAKE_CTR=exited)" "an exited container must read dead"
+  assert_equals dead "$(verdict ses:fm-ct dead FM_FAKE_CTR=absent)" "no container behind a shell pane must read dead"
+  assert_equals missing "$(verdict ses:fm-ct missing FM_FAKE_CTR=absent)" "no container and no pane must read missing"
+  assert_equals ambiguous "$(verdict ses:fm-ct alive FM_FAKE_CTR=absent)" \
+    "a runner in the pane without its container must not read as a live agent"
+  assert_equals unreadable "$(verdict ses:fm-ct dead FM_FAKE_CTR=broken)" "a failed podman read must never read dead"
+  assert_equals unreadable "$(verdict ses:fm-ct dead FM_FAKE_CTR=running FM_FAKE_TOP_FAIL=1)" \
+    "a failed process listing must never read dead"
+  : > "$dir/calls"
+  assert_equals dead "$(verdict ses:fm-pt dead FM_FAKE_CTR=running FM_FAKE_TOP="$rows_claude")" \
+    "a task outside the container runtime must keep its endpoint's own verdict"
+  assert_equals alive "$(verdict ses:fm-pt alive FM_FAKE_CTR=absent)" "a live non-container task must stay alive"
+  [ ! -s "$dir/calls" ] || fail "a task outside the container runtime consulted podman"$'\n'"$(cat "$dir/calls")"
+  pass "a container task's agent is read from its recorded container, and every other task from its endpoint"
 }
 
 # The proxy is exercised through its CLI against a local upstream: an allowed
@@ -497,6 +611,8 @@ test_runner_mounts_nothing_outside_the_allow_list
 test_runner_hands_the_token_only_through_a_private_env_file
 test_runner_relays_hook_events_to_the_host_busy_contract
 test_runner_reads_as_a_live_claude_agent
+test_runner_passes_the_host_timezone
+test_container_task_liveness_comes_from_its_container
 test_proxy_tunnels_only_allow_listed_hosts
 test_spawn_launches_a_selected_project_inside_its_container
 test_spawn_gives_a_container_scout_the_container_completion_overlay

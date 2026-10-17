@@ -60,6 +60,17 @@
 # config/container-claude-token, mode 0600. The runner reads it at launch and
 # hands it to podman through a 0600 env file in a private directory it removes
 # on exit, so the token is never on a command line or in the task records.
+#
+# LIVENESS. The contained claude runs under conmon, not under the pane's shell,
+# so no pane process tree holds it, and Claude's own Herdr integration cannot
+# reach the host to register it. A container task's agent is therefore read
+# from its recorded container (fm_container_agent_state): alive only while
+# podman reports the container running and a verified harness process inside
+# it. bin/fm-backend.sh's fm_backend_agent_state applies that to every task
+# record carrying runtime=container, so every liveness decision - the
+# doorbell, fm-control, the watcher, crew state, relaunch, teardown - reads
+# the same verdict, while the pane's own read still decides whether the
+# endpoint exists at all.
 
 FM_CONTAINER_LIB_DIR=$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; CDPATH='' cd "${d:-/}" && pwd -P)
 
@@ -308,6 +319,35 @@ fm_container_spec_load() {  # <spec-file>
   done
 }
 
+# The host's timezone as a zone name the container's tzdata resolves, such as
+# Asia/Singapore: the runner's TZ when it names a zone, else the zone
+# <localtime> (default /etc/localtime) links into a zoneinfo tree. Returns 1,
+# printing nothing, when neither names one; the container then keeps UTC.
+fm_container_host_timezone() {  # [localtime]
+  local tz=${TZ:-} link
+  tz=${tz#:}
+  case "$tz" in
+    '') tz=${1:-/etc/localtime} ;;
+  esac
+  case "$tz" in
+    /*)
+      if [ -L "$tz" ]; then
+        link=$(readlink "$tz" 2>/dev/null) || return 1
+      else
+        link=$tz
+      fi
+      case "$link" in
+        */zoneinfo/?*) tz=${link##*/zoneinfo/} ;;
+        *) return 1 ;;
+      esac
+      ;;
+  esac
+  case "$tz" in
+    ''|/*|*..*|*[!A-Za-z0-9_+/-]*) return 1 ;;
+  esac
+  printf '%s\n' "$tz"
+}
+
 fm_container_mount_path_ok() {  # <path>
   case "$1" in
     /*) ;;
@@ -325,7 +365,7 @@ fm_container_mount_path_ok() {  # <path>
 # per-launch files. This function is the single owner of every flag, mount,
 # and environment value a container launch carries.
 fm_container_podman_args() {  # <proxy-socket> <env-file> [<term>]
-  local sock=$1 envfile=$2 term=${3:-xterm-256color} path proxy
+  local sock=$1 envfile=$2 term=${3:-xterm-256color} path proxy tz
   local -a mounts=()
   proxy="http://127.0.0.1:$FM_CONTAINER_PROXY_PORT"
   for path in "$FM_CS_worktree" "$FM_CS_objects" "$FM_CS_home" "$FM_CS_events" "$FM_CS_status" \
@@ -381,6 +421,11 @@ fm_container_podman_args() {  # <proxy-socket> <env-file> [<term>]
     -e "TERM=$term"
     -e "LANG=C.UTF-8"
   )
+  # The host's zone by name, so the container's clock reads like the host's;
+  # the image carries tzdata, and no host file is mounted for it.
+  if tz=$(fm_container_host_timezone); then
+    FM_CONTAINER_ARGS+=(-e "TZ=$tz")
+  fi
   if [ -n "$FM_CS_git_name" ]; then
     FM_CONTAINER_ARGS+=(-e "GIT_AUTHOR_NAME=$FM_CS_git_name" -e "GIT_COMMITTER_NAME=$FM_CS_git_name")
   fi
@@ -438,4 +483,86 @@ fm_container_remove() {  # <container-name>
     echo "error: podman could not remove container $name" >&2
     return 1
   }
+}
+
+# What a task's recorded container holds, from podman alone, as one of:
+#   alive      - podman reports the container running and a verified harness
+#                process inside it (fm_agent_process_classify, by kernel name
+#                or argv[0]; the in-container pid means nothing on the host, so
+#                no pid is passed).
+#   dead       - podman has no container by that name, or reports it exited,
+#                stopped, or being removed: nothing can be running in it.
+#   ambiguous  - the container exists but is starting, paused, or stopping, or
+#                runs with no harness process: the moments either side of the
+#                agent's life, which license nothing.
+#   unreadable - podman is absent, the name is not one this runtime makes, or
+#                a podman read failed or answered something unexpected.
+fm_container_process_state() {  # <container-name>
+  local name=$1 status rc rows row comm rest argv0 header=1
+  case "$name" in
+    ''|*[!A-Za-z0-9_.-]*) printf 'unreadable'; return 0 ;;
+  esac
+  command -v podman >/dev/null 2>&1 || { printf 'unreadable'; return 0; }
+  if ! status=$(podman container inspect --format '{{.State.Status}}' "$name" 2>/dev/null); then
+    rc=0
+    podman container exists "$name" >/dev/null 2>&1 || rc=$?
+    # `container exists` answers 1 for exactly "no such container"; anything
+    # else, including a container that exists after all, is not proof of death.
+    [ "$rc" -eq 1 ] && printf 'dead' || printf 'unreadable'
+    return 0
+  fi
+  case "$status" in
+    running) ;;
+    exited|stopped|removing) printf 'dead'; return 0 ;;
+    created|configured|initialized|paused|stopping) printf 'ambiguous'; return 0 ;;
+    *) printf 'unreadable'; return 0 ;;
+  esac
+  rows=$(podman top "$name" comm args 2>/dev/null) || { printf 'unreadable'; return 0; }
+  command -v fm_agent_process_classify >/dev/null 2>&1 || {
+    # shellcheck source=bin/fm-agent-process-lib.sh
+    . "$FM_CONTAINER_LIB_DIR/fm-agent-process-lib.sh"
+  }
+  while IFS= read -r row; do
+    if [ "$header" = 1 ]; then
+      header=0
+      continue
+    fi
+    row=${row#"${row%%[![:space:]]*}"}
+    [ -n "$row" ] || continue
+    comm=${row%%[[:space:]]*}
+    rest=${row#"$comm"}
+    rest=${rest#"${rest%%[![:space:]]*}"}
+    argv0=${rest%%[[:space:]]*}
+    if [ "$(fm_agent_process_classify "$comm" "$argv0" '')" = agent ]; then
+      printf 'alive'
+      return 0
+    fi
+  done <<ROWS
+$rows
+ROWS
+  printf 'ambiguous'
+}
+
+# The fm_backend_agent_state verdict for a container task, from its recorded
+# container and the endpoint's own read (<endpoint-state>, the backend's
+# verdict for the pane). The container decides whether the agent runs; the
+# endpoint read still decides whether the pane is there to reach it:
+#   - an unreadable endpoint or container stays unreadable;
+#   - a live agent, or a container between states, is alive or ambiguous, and
+#     never missing: a gone pane with its container still up is ambiguous,
+#     because recreating the endpoint could not replace that agent;
+#   - a dead container leaves the endpoint's verdict, except that an endpoint
+#     still reading alive - the runner in the pane before or after its
+#     container - is ambiguous rather than a live agent.
+fm_container_agent_state() {  # <container-name> <endpoint-state>
+  local endpoint=$2 inner
+  [ "$endpoint" != unreadable ] || { printf 'unreadable'; return 0; }
+  inner=$(fm_container_process_state "$1")
+  case "$inner:$endpoint" in
+    alive:missing|ambiguous:*) printf 'ambiguous' ;;
+    alive:*) printf 'alive' ;;
+    dead:alive) printf 'ambiguous' ;;
+    dead:*) printf '%s' "$endpoint" ;;
+    *) printf 'unreadable' ;;
+  esac
 }
