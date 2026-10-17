@@ -75,6 +75,18 @@ esac
 exit 0
 SH
   chmod +x "$1/gh-axi"
+  cat > "$1/gh" <<'SH'
+#!/usr/bin/env bash
+log=${FM_FAKE_GH_LOG:?}.gh
+printf '%s\n' "$*" >> "$log"
+printf '%s\n' "$PWD" >> "$log.cwd"
+case "$*" in
+  *isDraft*) printf '{"isDraft":false}\n' ;;
+  *headRefOid*) git --git-dir="${FM_FAKE_GH_REMOTE:?}" rev-parse refs/heads/fm/t1 ;;
+esac
+exit 0
+SH
+  chmod +x "$1/gh"
 }
 
 # A tool that must never run on the host during delivery.
@@ -318,6 +330,72 @@ test_worker_written_git_config_never_runs_or_redirects_on_the_host() {
   pass "a credential helper, filter, ssh command, fsmonitor, pushurl, or pushInsteadOf the worker writes never runs on the host or redirects the push"
 }
 
+# A host tool that reads a contained task's clone after delivery.
+host_tool() {  # <script> [args...]
+  local script=$1
+  shift
+  FM_ROOT_OVERRIDE='' FM_HOME="$D_HOME" FM_STATE_OVERRIDE="$D_HOME/state" FM_DATA_OVERRIDE="$D_HOME/data" \
+    FM_CONFIG_OVERRIDE="$D_HOME/config" GIT_CONFIG_GLOBAL="$D/gitconfig" FM_FAKE_GH_LOG="$D_LOG" \
+    FM_FAKE_GH_REMOTE="$D/remote.git" PATH="$D_FAKEBIN:$PATH" "$ROOT/bin/$script" "$@" 2>&1
+}
+
+test_landing_tools_read_a_contained_clone_as_data() {
+  local out status tip url=https://github.com/acme/widget/pull/7 tool
+  make_world landing
+  tip=$(git -C "$D_CLONE" rev-parse HEAD)
+  out=$(deliver --ci-wait 0)
+  expect_code 0 "$?" "the delivery should succeed"$'\n'"$out"
+  git -C "$D/remote.git" update-ref refs/pull/7/head "$tip"
+  # After its ready report the worker swaps in a .git whose config points
+  # origin, diffs, credentials, and hooks at what it chose.
+  git init -q --bare "$D/attacker.git"
+  git -C "$D/seed" checkout -q -b attack
+  printf 'attacker content\n' > "$D/seed/lib.rs"
+  git -C "$D/seed" commit -q -am 'attacker'
+  git -C "$D/seed" push -q "file://$D/attacker.git" "attack:refs/pull/7/head"
+  for tool in credential-helper diff-external textconv ssh-command clone-fsmonitor; do
+    make_sentinel "$D/$tool" "$D_EXEC"
+  done
+  mv "$D_CLONE/.git" "$D/gitdir-before-swap"
+  cp -R "$D/gitdir-before-swap" "$D_CLONE/.git"
+  cat > "$D_CLONE/.git/config" <<EOF
+[core]
+	repositoryformatversion = 0
+	bare = false
+	hooksPath = $D/projhooks
+	fsmonitor = $D/clone-fsmonitor
+	sshCommand = $D/ssh-command
+[remote "origin"]
+	url = file://$D/attacker.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[credential]
+	helper = !$D/credential-helper
+[diff]
+	external = $D/diff-external
+[diff "evil"]
+	textconv = $D/textconv
+EOF
+  printf '* diff=evil\n' > "$D_CLONE/.git/info/attributes"
+  : > "$D_EXEC"
+
+  out=$(host_tool fm-review-diff.sh t1)
+  status=$?
+  expect_code 0 "$status" "the review diff of a contained clone should succeed"$'\n'"$out"
+  assert_contains "$out" "+pub fn add(a: i32, b: i32) -> i32 { a + b }" "the review diff does not show the delivered change"
+  assert_not_contains "$out" "attacker content" "the review diff fetched from the origin the worker named"
+  assert_nothing_ran_on_the_host "the review diff"
+
+  write_meta "pr=$url" "delivered_head=$tip"
+  out=$(host_tool fm-pr-check.sh t1 "$url")
+  status=$?
+  expect_code 0 "$status" "the PR check of a delivered contained ship should record it"$'\n'"$out"
+  assert_grep "pr=$url" "$D_HOME/state/t1.meta" "the PR was not recorded"
+  assert_grep "pr_head=$tip" "$D_HOME/state/t1.meta" "the PR head was not recorded"
+  assert_no_grep "$D_CLONE" "$D_LOG.gh.cwd" "gh ran inside the contained clone"
+  assert_nothing_ran_on_the_host "the PR check"
+  pass "review diff and PR check read a contained clone as data: no worker-named origin, diff driver, helper, or hook runs on the host"
+}
+
 test_ci_outcomes_are_reported_without_an_agent() {
   local out status log
   make_world ci-failed
@@ -483,6 +561,7 @@ test_a_clean_branch_is_pushed_published_and_reported
 test_a_redelivery_reuses_the_open_pr_and_a_draft_is_marked_ready
 test_a_redelivery_waits_for_the_pr_head_to_reach_the_pushed_commit
 test_worker_written_git_config_never_runs_or_redirects_on_the_host
+test_landing_tools_read_a_contained_clone_as_data
 test_ci_outcomes_are_reported_without_an_agent
 test_each_unverifiable_branch_is_refused
 test_a_diverged_remote_branch_is_never_overwritten

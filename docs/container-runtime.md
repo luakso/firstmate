@@ -114,6 +114,7 @@ No build, test, lint, formatter, git hook, or agent runs on the host at any step
 The container can rewrite anything under the clone's `.git`, even replace the directory, so git never runs in the clone's repository: every git command runs in a private bare repository with config the delivery writes itself, which holds a copy of the clone's own objects and borrows only the project clone's, ignores commit-graphs, multi-pack-indexes, and pack bitmaps, and defines no hook, filter, or helper.
 The clone's HEAD, branch ref, index, `info/exclude`, and config are read as plain data, and the clone is touched only as the work tree of the clean-tree status, without the host's global config and without running git inside a submodule.
 Only the push reads the host's git config, for its credentials, and it pushes to the project clone's origin URL, never recursing into submodules.
+The other host tools that read a contained task's clone treat it the same way ([`bin/fm-task-clone-lib.sh`](../bin/fm-task-clone-lib.sh) "CONTAINED CLONES" owns the shared helpers): the Definition-of-done gate reads the clone's HEAD and refs as data, `bin/fm-review-diff.sh` diffs in a private snapshot and fetches the pull request and default branch there from the project clone's origin URL, and `bin/fm-pr-check.sh` runs `gh` from a private empty directory.
 
 ## Supported limits
 

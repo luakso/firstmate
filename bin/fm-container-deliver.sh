@@ -194,43 +194,28 @@ fm_pr_head_valid "$BASE" || refuse "its record has no clone_base= commit, so its
 if [ -n "$WT" ] && { [ -e "$WT/.git/commondir" ] || [ -L "$WT/.git/commondir" ]; }; then
   refuse "the clone's .git holds a commondir file, which would point git at another repository's config"
 fi
-fm_task_clone_owned "$WT" "$ID" "$FM_HOME" || refuse "its recorded worktree ${WT:-<missing>} is not the task clone this home made for it"
+fm_task_clone_owned "$WT" "$ID" "$FM_HOME" container || refuse "its recorded worktree ${WT:-<missing>} is not the task clone this home made for it"
 CLONE_DIR=$(cd "$WT" 2>/dev/null && pwd -P) || refuse "its recorded worktree $WT is unreadable"
 CLONE_GIT_DIR=$CLONE_DIR/.git
 [ -n "$PROJ" ] && [ -d "$PROJ" ] || refuse "its project clone ${PROJ:-<missing>} is not a directory"
 
 project_git() {
-  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
-    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR \
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_OPTIONAL_LOCKS=0 \
-    git -C "$PROJ" -c core.fsmonitor=false -c core.hooksPath=/dev/null "$@"
+  fm_task_clone_project_git "$PROJ" "$@"
 }
-# Print the first <max-bytes> of a worker-written file, refusing anything but
-# a regular file.
-plain_file() {  # <path> <max-bytes>
-  [ -f "$1" ] && [ ! -L "$1" ] || return 1
-  fm_run_timed 10 head -c "$2" -- "$1"
-}
-# Every git command runs in this private repository, whose config this script
-# writes; the clone's own git files are only ever read as data.
+# Every git command runs in this private repository (fm_task_clone_snapshot),
+# whose config this script writes; the clone's own git files are only ever
+# read as data.
 PRIV_GIT=$PRIVATE/repo.git
-PRIV_ENV=(env -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY
-  -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR
-  GIT_DIR="$PRIV_GIT" GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0)
 priv_git() {
-  (cd "$PRIVATE" && "${PRIV_ENV[@]}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@")
+  (cd "$PRIVATE" && "${FM_TASK_CLONE_GIT_ENV[@]}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@")
 }
 
 # --- 2. the clone's object sources ---------------------------------------------
 [ ! -e "$CLONE_GIT_DIR/shallow" ] && [ ! -L "$CLONE_GIT_DIR/shallow" ] || refuse "the clone is shallow"
-if ! project_objects=$(project_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) ||
-  ! project_objects=$(cd "$project_objects/objects" 2>/dev/null && pwd -P); then
-  refuse "the project clone's object store is unreadable"
-fi
-object_format=$(project_git rev-parse --show-object-format 2>/dev/null) || refuse "the project clone's object format is unreadable"
+project_objects=$(fm_task_clone_project_objects "$PROJ") || refuse "the project clone's object store is unreadable"
 alternates="$CLONE_GIT_DIR/objects/info/alternates"
 if [ -e "$alternates" ] || [ -L "$alternates" ]; then
-  alternates_text=$(plain_file "$alternates" 65536) || refuse "the clone's objects/info/alternates is not a regular file"
+  alternates_text=$(fm_task_clone_plain_file "$alternates" 65536) || refuse "the clone's objects/info/alternates is not a regular file"
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
     case "$line" in /*) ;; *) line="$CLONE_GIT_DIR/objects/$line" ;; esac
@@ -239,40 +224,12 @@ if [ -e "$alternates" ] || [ -L "$alternates" ]; then
       refuse "the clone borrows objects from $line, not only from its project clone's object store"
   done <<<"$alternates_text"
 fi
-[ -d "$CLONE_GIT_DIR/objects" ] && [ ! -L "$CLONE_GIT_DIR/objects" ] || refuse "the clone's object store is not a directory"
-mkdir -p "$PRIV_GIT/refs" "$PRIV_GIT/info" || die "could not create the private repository"
-if ! fm_run_timed 300 cp -RP -- "$CLONE_GIT_DIR/objects" "$PRIV_GIT/objects" 2>/dev/null ||
-  ! chmod -R u+w -- "$PRIV_GIT/objects" || ! rm -rf -- "$PRIV_GIT/objects/info"; then
-  refuse "the clone's object store could not be copied"
-fi
-odd=$(find "$PRIV_GIT/objects" ! -type f ! -type d -print 2>/dev/null | head -n 1)
-[ -z "$odd" ] || refuse "the clone's object store holds ${odd#"$PRIV_GIT/"}, which is not a regular file or directory"
-mkdir -p "$PRIV_GIT/objects/info" || die "could not create the private repository"
-printf '%s\n' "$project_objects" >"$PRIV_GIT/objects/info/alternates" || die "could not create the private repository"
-{
-  if [ "$object_format" = sha256 ]; then
-    printf '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n'
-  else
-    printf '[core]\n\trepositoryformatversion = 0\n'
-  fi
-  printf '[core]\n\tbare = true\n\tcommitGraph = false\n\tmultiPackIndex = false\n\tuntrackedCache = false\n\tfsmonitor = false\n\thooksPath = /dev/null\n'
-  printf '[pack]\n\tuseBitmaps = false\n\treadReverseIndex = false\n'
-  printf '[gc]\n\tauto = 0\n'
-} >"$PRIV_GIT/config" || die "could not create the private repository"
+fm_task_clone_snapshot "$CLONE_GIT_DIR" "$PRIV_GIT" "$PROJ" || refuse "$FM_TASK_CLONE_ERROR"
 
 # --- 3. HEAD is the recorded branch --------------------------------------------
-clone_head=$(plain_file "$CLONE_GIT_DIR/HEAD" 1024) || clone_head=
-[ "$clone_head" = "ref: refs/heads/$BRANCH" ] || refuse "the clone's HEAD is not its recorded branch $BRANCH"
-loose_ref="$CLONE_GIT_DIR/refs/heads/$BRANCH"
-if [ -e "$loose_ref" ] || [ -L "$loose_ref" ]; then
-  TIP=$(plain_file "$loose_ref" 128) || TIP=
-elif [ -f "$CLONE_GIT_DIR/packed-refs" ] && [ ! -L "$CLONE_GIT_DIR/packed-refs" ]; then
-  # shellcheck disable=SC2016  # awk, not the shell, expands $1 and $2
-  TIP=$(fm_run_timed 30 awk -v ref="refs/heads/$BRANCH" '$2 == ref && NF == 2 { print $1; exit }' "$CLONE_GIT_DIR/packed-refs") || TIP=
-else
-  TIP=
-fi
-fm_pr_head_valid "$TIP" || refuse "branch $BRANCH has no commit"
+[ "$(fm_task_clone_head_data "$CLONE_GIT_DIR")" = "refs/heads/$BRANCH" ] ||
+  refuse "the clone's HEAD is not its recorded branch $BRANCH"
+TIP=$(fm_task_clone_ref_data "$CLONE_GIT_DIR" "refs/heads/$BRANCH") || refuse "branch $BRANCH has no commit"
 printf '%s\n' "$TIP" >"$PRIV_GIT/HEAD" || die "could not create the private repository"
 priv_git rev-parse --verify --quiet "$TIP^{commit}" >/dev/null 2>&1 || refuse "branch $BRANCH has no commit"
 
@@ -283,9 +240,9 @@ if [ ! -f "$CLONE_GIT_DIR/index" ] || [ -L "$CLONE_GIT_DIR/index" ] ||
 fi
 exclude="$CLONE_GIT_DIR/info/exclude"
 if [ -e "$exclude" ] || [ -L "$exclude" ]; then
-  plain_file "$exclude" 1048576 >"$PRIV_GIT/info/exclude" || refuse "the clone's info/exclude is not a regular file"
+  fm_task_clone_plain_file "$exclude" 1048576 >"$PRIV_GIT/info/exclude" || refuse "the clone's info/exclude is not a regular file"
 fi
-dirty=$(cd "$CLONE_DIR" && "${PRIV_ENV[@]}" GIT_WORK_TREE="$CLONE_DIR" GIT_INDEX_FILE="$PRIVATE/index" \
+dirty=$(cd "$CLONE_DIR" && "${FM_TASK_CLONE_GIT_ENV[@]}" GIT_WORK_TREE="$CLONE_DIR" GIT_INDEX_FILE="$PRIVATE/index" \
   GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
   git status --porcelain=v1 --untracked-files=all --ignore-submodules=dirty 2>/dev/null) ||
   refuse "the clone's status could not be read"
@@ -305,7 +262,7 @@ touched=$(printf '%s\n' "$touched" | sed '/^$/d' | sort -u)
 
 # --- 7. the push target ------------------------------------------------------------
 ORIGIN=
-if plain_file "$CLONE_GIT_DIR/config" 1048576 >"$PRIVATE/clone-config"; then
+if fm_task_clone_plain_file "$CLONE_GIT_DIR/config" 1048576 >"$PRIVATE/clone-config"; then
   ORIGIN=$(priv_git config --no-includes --file "$PRIVATE/clone-config" --get remote.origin.url 2>/dev/null) || ORIGIN=
 fi
 PROJECT_ORIGIN=$(project_git config --get remote.origin.url 2>/dev/null) || PROJECT_ORIGIN=
@@ -379,7 +336,7 @@ gh_axi() {  # <args...>
 }
 
 # The host's own git config applies to the push alone, for its credentials.
-if ! push_out=$(cd "$PRIVATE" && fm_run_timed 300 "${PRIV_ENV[@]}" \
+if ! push_out=$(cd "$PRIVATE" && fm_run_timed 300 "${FM_TASK_CLONE_GIT_ENV[@]}" \
   git push --no-verify --recurse-submodules=no --porcelain "$PROJECT_ORIGIN" "$TIP:refs/heads/$BRANCH" 2>&1); then
   die "the push of $TIP to $BRANCH on origin failed; nothing was force-pushed:"$'\n'"$push_out"
 fi

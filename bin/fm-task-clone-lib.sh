@@ -153,9 +153,12 @@ fm_task_clone_create() {  # <project> <task-id> <home>
 # True when <worktree> has a task clone's shape: a standalone repository whose
 # git directory is its own .git, beside a task-clone marker this user owns.
 # Readers that hold no task identity use this; removal uses fm_task_clone_owned.
+# With `container`, for a contained task's clone (see CONTAINED CLONES below),
+# the git directory's shape is read from its files - a real .git directory
+# holding a regular HEAD file and no commondir - and git never runs in it.
 # FM_TASK_CLONE_DIR is left naming the task directory.
 FM_TASK_CLONE_DIR=
-fm_task_clone_shaped() {  # <worktree>
+fm_task_clone_shaped() {  # <worktree> [container]
   local wt_real dir marker git_dir common
   FM_TASK_CLONE_DIR=
   wt_real=$(cd "$1" 2>/dev/null && pwd -P) || return 1
@@ -163,20 +166,25 @@ fm_task_clone_shaped() {  # <worktree>
   marker="$dir/$FM_TASK_CLONE_MARKER"
   [ -f "$marker" ] && [ ! -L "$marker" ] && [ -O "$marker" ] || return 1
   [ -d "$wt_real/.git" ] && [ ! -L "$wt_real/.git" ] || return 1
-  git_dir=$(git -C "$wt_real" rev-parse --absolute-git-dir 2>/dev/null) || return 1
-  common=$(git -C "$wt_real" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
-  git_dir=$(cd "$git_dir" 2>/dev/null && pwd -P) || return 1
-  common=$(cd "$common" 2>/dev/null && pwd -P) || return 1
-  [ "$git_dir" = "$wt_real/.git" ] && [ "$common" = "$git_dir" ] || return 1
+  if [ "${2:-}" = container ]; then
+    [ -f "$wt_real/.git/HEAD" ] && [ ! -L "$wt_real/.git/HEAD" ] || return 1
+    [ ! -e "$wt_real/.git/commondir" ] && [ ! -L "$wt_real/.git/commondir" ] || return 1
+  else
+    git_dir=$(git -C "$wt_real" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+    common=$(git -C "$wt_real" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+    git_dir=$(cd "$git_dir" 2>/dev/null && pwd -P) || return 1
+    common=$(cd "$common" 2>/dev/null && pwd -P) || return 1
+    [ "$git_dir" = "$wt_real/.git" ] && [ "$common" = "$git_dir" ] || return 1
+  fi
   FM_TASK_CLONE_DIR=$dir
 }
 
 # True when <worktree> is the clone fm_task_clone_create made for <task-id> in
 # <home>: task-clone shaped, with a marker naming exactly that task and home.
-fm_task_clone_owned() {  # <worktree> <task-id> <home>
+fm_task_clone_owned() {  # <worktree> <task-id> <home> [container]
   local home_real want
   home_real=$(cd "$3" 2>/dev/null && pwd -P) || return 1
-  fm_task_clone_shaped "$1" || return 1
+  fm_task_clone_shaped "$1" "${4:-}" || return 1
   want=$(printf '%s\n%s' "$2" "$home_real")
   [ "$(cat "$FM_TASK_CLONE_DIR/$FM_TASK_CLONE_MARKER" 2>/dev/null)" = "$want" ] || {
     FM_TASK_CLONE_DIR=
@@ -198,4 +206,141 @@ fm_task_clone_remove() {  # <worktree> <task-id> <home>
     echo "error: could not remove task clone directory $FM_TASK_CLONE_DIR" >&2
     return 1
   }
+}
+
+# CONTAINED CLONES. A contained worker (bin/fm-container-lib.sh) can rewrite
+# anything under its clone's .git, even replace the directory past its
+# read-only config and hooks binds, so a host tool never runs git in that
+# repository: no config, gitattributes driver, hook, or fsmonitor of the clone's
+# is ever honoured. It reads the clone's HEAD and refs as plain data, and runs
+# git in a private snapshot (fm_task_clone_snapshot) whose config it writes.
+# These helpers bound their reads with fm_run_timed, so their callers source
+# bin/fm-timeout-lib.sh.
+
+# Print the first <max-bytes> of a worker-written file, refusing anything but
+# a regular file.
+fm_task_clone_plain_file() {  # <path> <max-bytes>
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  fm_run_timed 10 head -c "$2" -- "$1"
+}
+
+# Print the full SHA <git-dir> holds for <ref> (refs/heads/<name>), read as
+# data from its loose ref file or, failing that, its packed-refs.
+fm_task_clone_ref_data() {  # <git-dir> <ref>
+  local loose="$1/$2" sha LC_ALL=C
+  if [ -e "$loose" ] || [ -L "$loose" ]; then
+    sha=$(fm_task_clone_plain_file "$loose" 128) || return 1
+  elif [ -f "$1/packed-refs" ] && [ ! -L "$1/packed-refs" ]; then
+    # shellcheck disable=SC2016  # awk, not the shell, expands $1 and $2
+    sha=$(fm_run_timed 30 awk -v ref="$2" '$2 == ref && NF == 2 { print $1; exit }' "$1/packed-refs") || return 1
+  else
+    return 1
+  fi
+  [[ "$sha" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]] || return 1
+  printf '%s\n' "$sha"
+}
+
+# Print what <git-dir>/HEAD names, read as data: refs/heads/<branch>, or the
+# full SHA of a detached HEAD.
+fm_task_clone_head_data() {  # <git-dir>
+  local head LC_ALL=C
+  head=$(fm_task_clone_plain_file "$1/HEAD" 1024) || return 1
+  case "$head" in
+    'ref: refs/heads/'?*) printf '%s\n' "${head#ref: }" ;;
+    *)
+      [[ "$head" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]] || return 1
+      printf '%s\n' "$head" ;;
+  esac
+}
+
+# Print the full SHA <git-dir>'s HEAD resolves to, read as data.
+fm_task_clone_head_sha() {  # <git-dir>
+  local head
+  head=$(fm_task_clone_head_data "$1") || return 1
+  case "$head" in
+    refs/heads/*) fm_task_clone_ref_data "$1" "$head" ;;
+    *) printf '%s\n' "$head" ;;
+  esac
+}
+
+# git in a host-owned project clone, with none of the caller's repository
+# environment and no global or system config.
+fm_task_clone_project_git() {  # <project-clone> <git-args...>
+  local project=$1
+  shift
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_OPTIONAL_LOCKS=0 \
+    git -C "$project" -c core.fsmonitor=false -c core.hooksPath=/dev/null "$@"
+}
+
+# Print the resolved object store of <project-clone>.
+fm_task_clone_project_objects() {  # <project-clone>
+  local common
+  common=$(fm_task_clone_project_git "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  (cd "$common/objects" 2>/dev/null && pwd -P)
+}
+
+# Build at <private-git-dir> the bare repository a host tool runs git in instead
+# of <clone-git-dir>: a copy of the clone's own object store without
+# objects/info, refused when it holds anything but regular files and
+# directories, borrowing only <project-clone>'s object store, with config
+# written here - hooks, fsmonitor, the untracked cache, commit-graphs,
+# multi-pack-indexes, pack bitmaps, automatic maintenance, and submodule
+# recursion off, and no filter, driver, or helper defined. Its HEAD is unborn
+# and it has no refs; the caller writes what it read as data. Sets
+# FM_TASK_CLONE_GIT_ENV, the env(1) prefix that runs a command in it with none
+# of the caller's repository environment; a read adds GIT_CONFIG_GLOBAL=/dev/null
+# GIT_CONFIG_NOSYSTEM=1, and only a fetch or push, for its credentials, reads
+# the host's own config. 1 with FM_TASK_CLONE_ERROR naming why.
+FM_TASK_CLONE_ERROR=
+FM_TASK_CLONE_GIT_ENV=()
+# shellcheck disable=SC2034 # Output globals, read by the sourcing caller.
+fm_task_clone_snapshot() {  # <clone-git-dir> <private-git-dir> <project-clone>
+  local src=$1 priv=$2 project=$3 objects format odd
+  FM_TASK_CLONE_ERROR=
+  FM_TASK_CLONE_GIT_ENV=(env -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY
+    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR
+    GIT_DIR="$priv" GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0)
+  if ! objects=$(fm_task_clone_project_objects "$project"); then
+    FM_TASK_CLONE_ERROR="the project clone's object store is unreadable"
+    return 1
+  fi
+  if ! format=$(fm_task_clone_project_git "$project" rev-parse --show-object-format 2>/dev/null); then
+    FM_TASK_CLONE_ERROR="the project clone's object format is unreadable"
+    return 1
+  fi
+  if [ ! -d "$src/objects" ] || [ -L "$src/objects" ]; then
+    FM_TASK_CLONE_ERROR="the clone's object store is not a directory"
+    return 1
+  fi
+  if ! mkdir -p "$priv/refs" "$priv/info"; then
+    FM_TASK_CLONE_ERROR="could not create the private repository"
+    return 1
+  fi
+  if ! fm_run_timed 300 cp -RP -- "$src/objects" "$priv/objects" 2>/dev/null ||
+    ! chmod -R u+w -- "$priv/objects" || ! rm -rf -- "$priv/objects/info"; then
+    FM_TASK_CLONE_ERROR="the clone's object store could not be copied"
+    return 1
+  fi
+  odd=$(find "$priv/objects" ! -type f ! -type d -print 2>/dev/null | head -n 1)
+  if [ -n "$odd" ]; then
+    FM_TASK_CLONE_ERROR="the clone's object store holds ${odd#"$priv/"}, which is not a regular file or directory"
+    return 1
+  fi
+  if ! mkdir -p "$priv/objects/info" || ! printf '%s\n' "$objects" >"$priv/objects/info/alternates" ||
+    ! printf 'ref: refs/heads/fm-snapshot\n' >"$priv/HEAD" || ! {
+      if [ "$format" = sha256 ]; then
+        printf '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n'
+      else
+        printf '[core]\n\trepositoryformatversion = 0\n'
+      fi
+      printf '[core]\n\tbare = true\n\tcommitGraph = false\n\tmultiPackIndex = false\n\tuntrackedCache = false\n\tfsmonitor = false\n\thooksPath = /dev/null\n'
+      printf '[pack]\n\tuseBitmaps = false\n\treadReverseIndex = false\n'
+      printf '[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n'
+      printf '[fetch]\n\trecurseSubmodules = false\n[submodule]\n\trecurse = false\n'
+    } >"$priv/config"; then
+    FM_TASK_CLONE_ERROR="could not create the private repository"
+    return 1
+  fi
 }

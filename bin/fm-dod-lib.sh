@@ -21,9 +21,10 @@
 # mode the pre-validation `done: {summary}` is the pipeline handoff and is
 # not gated; only the later CI-ready `done: PR <url> checks green` is, or on a
 # Gerrit project the later `done: PR <change url> published for review`. A
-# contained direct-PR ship's ready-branch done is the host-delivery handoff,
-# checked in its task clone instead, and its PR report passes only on the head
-# host delivery recorded (fm_dod_container_ship). The
+# contained task's done is judged from its task clone read as data
+# (fm_dod_accept_contained_done): a direct-PR ship's ready-branch done is the
+# host-delivery handoff, and its PR report passes only on the head host
+# delivery recorded. The
 # named head is the worker copy's HEAD, except that a done naming the task's
 # recorded pr= passes when the forge holds that head: a forge-reported
 # pr_head= in no-mistakes mode, or a recorded merge
@@ -721,7 +722,7 @@ fm_dod_named_head_reachable_outside_worktree() {  # <worktree> <project> <mode> 
 # pr_head=, and the merge-notified marker; <meta> may be a captured copy
 # (bin/fm-fleet-snapshot.sh), so the marker is read from <state>.
 fm_dod_accept_ship_done() {  # <kind> <mode> <worktree> <project> <line> [<state> <id> <meta>]
-  local kind=$1 mode=$2 wt=$3 project=$4 line=$5 state=${6:-} id=${7:-} meta=${8:-} url sha gerrit delivered
+  local kind=$1 mode=$2 wt=$3 project=$4 line=$5 state=${6:-} id=${7:-} meta=${8:-} url sha gerrit
   fm_dod_should_gate_ship_done "$kind" "$mode" "$line" || return 0
   if url=$(fm_dod_pr_url_from_done_note "$(status_line_note "$line")") \
     && fm_dod_recorded_pr_on_forge "$state" "$id" "$meta" "$mode" "$url"; then
@@ -730,6 +731,10 @@ fm_dod_accept_ship_done() {  # <kind> <mode> <worktree> <project> <line> [<state
   if [ -z "$wt" ] || [ ! -d "$wt" ]; then
     printf '%s\n' "named head cannot be verified: worktree missing"
     return 1
+  fi
+  if [ -n "$meta" ] && [ "$(fm_dod_meta_value "$meta" runtime)" = container ]; then
+    fm_dod_accept_contained_done "$mode" "$wt" "$project" "$meta" "$url"
+    return
   fi
   if ! git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then
     printf '%s\n' "named head cannot be verified: worktree is not a git copy"
@@ -756,21 +761,6 @@ fm_dod_accept_ship_done() {  # <kind> <mode> <worktree> <project> <line> [<state
     printf '%s\n' "named head $sha is not the published content of $url: the change's current patch set does not carry this copy's HEAD tree, or it could not be read"
     return 1
   fi
-  if fm_dod_container_ship "$mode" "$meta"; then
-    if [ -n "$url" ]; then
-      delivered=$(fm_dod_meta_value "$meta" delivered_head)
-      if fm_pr_head_valid "$delivered" && [ "$sha" = "$delivered" ]; then
-        return 0
-      fi
-      printf '%s\n' "named head $sha is not the head host delivery pushed (delivered_head=${delivered:-none} in the task record)"
-      return 1
-    fi
-    if fm_task_clone_shaped "$wt" && [ "$(git -C "$wt" symbolic-ref --quiet HEAD 2>/dev/null)" = "refs/heads/$(fm_dod_meta_value "$meta" branch)" ]; then
-      return 0
-    fi
-    printf '%s\n' "named head $sha is not the tip of the task's recorded branch in its task clone, so it is not ready for host delivery"
-    return 1
-  fi
   if fm_dod_named_head_reachable_outside_worktree "$wt" "$project" "$mode" "$sha"; then
     return 0
   fi
@@ -778,15 +768,51 @@ fm_dod_accept_ship_done() {  # <kind> <mode> <worktree> <project> <line> [<state
   return 1
 }
 
-# 0 when the task is a contained direct-PR ship: the task record says
-# runtime=container. That worker cannot reach the forge
-# (bin/fm-container-deliver.sh publishes its branch from the host), so a done:
-# that reports no PR is its ready-branch handoff, checked as the tip of its
-# recorded branch in its own task clone, which teardown keeps until the work
-# lands. Its refs are worker-writable, so the PR report the delivery appends
-# passes only while the clone's HEAD is the delivered_head= the delivery wrote
-# into the host-owned task record after its push.
-fm_dod_container_ship() {  # <mode> <meta>
-  [ "$1" = direct-PR ] || return 1
-  [ -n "$2" ] && [ "$(fm_dod_meta_value "$2" runtime)" = container ]
+# The gate for a task whose record says runtime=container. Its worker can
+# rewrite anything under its clone's .git, so git never runs there: the clone
+# must be task-clone shaped as data, and its named head is its HEAD read as data
+# (bin/fm-task-clone-lib.sh "CONTAINED CLONES"). That worker cannot reach the
+# forge (bin/fm-container-deliver.sh publishes a direct-PR branch from the
+# host), so a direct-PR done: that reports no PR is its ready-branch handoff,
+# accepted while HEAD is the task's recorded branch, and the PR report the
+# delivery appends passes only while HEAD is the delivered_head= the delivery
+# wrote into the host-owned task record after its push. A local-only done:
+# passes while HEAD is on a branch of the clone, whose heads stand in for the
+# project's until bin/fm-merge-local.sh imports them, or when the host-owned
+# project clone already holds it. A contained ship ships in no other mode.
+# Same contract as fm_dod_accept_ship_done.
+fm_dod_accept_contained_done() {  # <mode> <worktree> <project> <meta> <url>
+  local mode=$1 wt=$2 project=$3 meta=$4 url=$5 git_dir head sha delivered
+  if ! fm_task_clone_shaped "$wt" container; then
+    printf '%s\n' "named head cannot be verified: worktree is not its task clone"
+    return 1
+  fi
+  git_dir="$(cd "$wt" && pwd -P)/.git"
+  if ! head=$(fm_task_clone_head_data "$git_dir") || ! sha=$(fm_task_clone_head_sha "$git_dir"); then
+    printf '%s\n' "named head could not be resolved"
+    return 1
+  fi
+  case "$mode" in
+    direct-PR)
+      if [ -n "$url" ]; then
+        delivered=$(fm_dod_meta_value "$meta" delivered_head)
+        if fm_pr_head_valid "$delivered" && [ "$sha" = "$delivered" ]; then
+          return 0
+        fi
+        printf '%s\n' "named head $sha is not the head host delivery pushed (delivered_head=${delivered:-none} in the task record)"
+        return 1
+      fi
+      [ "$head" = "refs/heads/$(fm_dod_meta_value "$meta" branch)" ] && return 0
+      printf '%s\n' "named head $sha is not the tip of the task's recorded branch in its task clone, so it is not ready for host delivery"
+      return 1 ;;
+    local-only)
+      case "$head" in refs/heads/*) return 0 ;; esac
+      if fm_dod_ref_contains "$project" refs/remotes "$sha" || fm_dod_ref_contains "$project" refs/heads "$sha"; then
+        return 0
+      fi
+      printf '%s\n' "named head $sha is unreachable outside the worker copy"
+      return 1 ;;
+  esac
+  printf '%s\n' "a contained ship delivers only in direct-PR or local-only mode, not ${mode:-no-mistakes}"
+  return 1
 }

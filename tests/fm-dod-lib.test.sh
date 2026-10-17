@@ -202,7 +202,19 @@ test_container_direct_pr_handoff_is_checked_in_its_task_clone() {
   reason=$(accept_done ship direct-PR "$clone" "$repo" "$handoff" "$state" tc-ctr "$meta") || rc=$?
   [ "$rc" -eq 1 ] || fail "a handoff whose HEAD is not the recorded branch was accepted"
   assert_contains "$reason" "not the tip of the task's recorded branch" "the off-branch handoff was refused for the wrong reason"
-  pass "a contained direct-PR handoff is checked in its task clone, and its PR report only on the head host delivery recorded"
+  # The worker can rewrite its clone's git config, so the gate reads the clone
+  # as data: a config that stops git does not change its verdict.
+  git -C "$clone" checkout -q fm/tc-ctr
+  printf 'delivered_head=%s\n' "$(git -C "$clone" rev-parse HEAD)" >> "$meta"
+  printf '[core]\n\trepositoryformatversion = 99\n' >> "$clone/.git/config"
+  ! git -C "$clone" rev-parse HEAD >/dev/null 2>&1 || fail "the fixture's clone config did not stop git"
+  accept_done ship direct-PR "$clone" "$repo" "done [at=4]: PR https://github.com/o/r/pull/9" "$state" tc-ctr "$meta" \
+    || fail "a contained ship's PR report was judged through its worker-written git config"
+  accept_done ship direct-PR "$clone" "$repo" "$handoff" "$state" tc-ctr "$meta" \
+    || fail "a contained ship's handoff was judged through its worker-written git config"
+  accept_done ship local-only "$clone" "$repo" "done [at=5]: ready in branch fm/tc-ctr" "$state" tc-ctr "$meta" \
+    || fail "a contained local-only ship's branch was judged through its worker-written git config"
+  pass "a contained direct-PR handoff is checked in its task clone read as data, and its PR report only on the head host delivery recorded"
 }
 
 test_free_text_sha_is_not_the_named_head() {
