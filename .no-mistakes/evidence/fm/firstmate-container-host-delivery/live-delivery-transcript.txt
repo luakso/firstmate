@@ -1,0 +1,127 @@
+LAB=/tmp/fm-lab.JBWSw9 W=/tmp/fmlive-world.CIvlRM
+warning: Empty last update token.
+warning: Empty last update token.
+warning: Empty last update token.
+warning: Empty last update token.
+CLONE=/tmp/fmlive-world.CIvlRM/clones/t1/widget BASE=dc10d712bc5f35114e5b6468dbdbbf4d7b10cc21
+lab tmux socket=/tmp/fm-lab.JBWSw9/tmux/tmux-1000/fm-lab
+
+################ S1 worker inside real container: no route to GitHub
+fatal: unable to access 'https://github.com/acme/widget.git/': Could not resolve host: github.com
+ls-remote exit=0
+sh: 1: wget: not found
+net probe done
+
+################ S1 worker builds a commit inside the container
+80a099b Document the widget
+TIP1=80a099bc7662f71ba44a0e474429a27dcc9c6cd5
+
+################ S1 host delivery (draft PR, green CI)
+fm-container-deliver: pushed 80a099bc7662f71ba44a0e474429a27dcc9c6cd5 to fm/t1 and published https://github.com/acme/widget/pull/7
+fm-container-deliver: done [at=1792222200]: PR https://github.com/acme/widget/pull/7 checks green
+exit=0
+remote fm/t1 = 80a099bc7662f71ba44a0e474429a27dcc9c6cd5
+status:
+done [at=1792222200]: PR https://github.com/acme/widget/pull/7 checks green
+meta delivered_head: delivered_head=80a099bc7662f71ba44a0e474429a27dcc9c6cd5
+gh-axi calls:
+pr list --repo acme/widget --state open --head fm/t1 --limit 1 --fields url
+pr create --repo acme/widget --title=Document the widget --body-file /tmp/fm-deliver.9FkzlthR/body.md --base main --head fm/t1
+pr view 7 --repo acme/widget
+pr ready 7 --repo acme/widget
+api repos/acme/widget/pulls/7 --jq .head.sha
+pr checks 7 --repo acme/widget
+PR body:
+## Commits
+
+- 80a099b Document the widget
+
+## Evidence from the contained worker
+
+
+- cargo test --locked (in container): 1 passed
+
+---
+Built, checked, and committed inside its task container, which holds no forge credentials; Firstmate pushed 80a099bc7662f71ba44a0e474429a27dcc9c6cd5 and opened this PR from the host without running project code there.
+canary: nothing ran on host
+
+################ S1b DoD gate via fm-pr-check.sh (registers the delivered PR only while clone HEAD == delivered_head)
+-- adversarial first: worker commits after delivery (HEAD != delivered_head)
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+error: named head f071f32c704e9b6a255f6c0f7c9a2bb5de4ac4a4 is not the head host delivery pushed (delivered_head=80a099bc7662f71ba44a0e474429a27dcc9c6cd5 in the task record)
+pr-check exit=1; meta pr= none
+-- clone HEAD back at delivered_head
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+armed: state/t1.check.sh
+pr-check exit=0; meta pr= pr=https://github.com/acme/widget/pull/7
+
+################ S2 hostile worker: plants fsmonitor/hooks/hooksPath in clone .git, commits again
+4bf6bae Add add
+fm-container-deliver: pushed 4bf6bae5117e10a6d76ab0c712e2c3a448fdf6d3 to fm/t1 and published https://github.com/acme/widget/pull/7
+fm-container-deliver: done [at=1792222203]: PR https://github.com/acme/widget/pull/7 checks green
+exit=0
+remote fm/t1 = 4bf6bae5117e10a6d76ab0c712e2c3a448fdf6d3 (clone HEAD 4bf6bae5117e10a6d76ab0c712e2c3a448fdf6d3)
+done [at=1792222203]: PR https://github.com/acme/widget/pull/7 checks green
+gh-axi calls:
+pr list --repo acme/widget --state open --head fm/t1 --limit 1 --fields url
+pr edit 7 --repo acme/widget --body-file /tmp/fm-deliver.H5yEPDT8/body.md
+pr view 7 --repo acme/widget
+api repos/acme/widget/pulls/7 --jq .head.sha
+pr checks 7 --repo acme/widget
+canary: nothing ran on host
+
+################ S3 CI failure: blocked line + host-only ci-failures.md
+fm-container-deliver: pushed 3f8b8903b6fba7acebbd92835942a63e836bb26f to fm/t1 and published https://github.com/acme/widget/pull/7
+fm-container-deliver: blocked [at=1792222203]: PR https://github.com/acme/widget/pull/7 checks failed: cargo test; failed-job logs for the contained worker are in /tmp/fmlive-world.CIvlRM/clones/t1/container/ci-failures.md
+exit=3
+blocked [at=1792222203]: PR https://github.com/acme/widget/pull/7 checks failed: cargo test; failed-job logs for the contained worker are in /tmp/fmlive-world.CIvlRM/clones/t1/container/ci-failures.md
+ci-failures.md:
+# CI failures for https://github.com/acme/widget/pull/7 at 3f8b8903b6fba7acebbd92835942a63e836bb26f
+
+```
+summary: "0 passed, 1 failed, 1 total"
+checks[1]{name,conclusion}:
+  "cargo test",fail
+```
+
+## Run 99
+
+canary: nothing ran on host
+
+################ S4 adversarial: commit touching .GitHub/workflows refused, nothing pushed
+fm-container-deliver: refusing to deliver t1: the branch changes paths under .github/, which a contained worker never changes:
+.GitHub/workflows/x.yml
+exit=1
+remote before=3f8b8903b6fba7acebbd92835942a63e836bb26f after=3f8b8903b6fba7acebbd92835942a63e836bb26f
+gh-axi calls: 0
+status lines before=3 after=3
+canary: nothing ran on host
+
+################ S5 adversarial: uncommitted change refused
+fm-container-deliver: refusing to deliver t1: the clone has uncommitted or untracked changes:
+ M README.md
+exit=1 remote=3f8b8903b6fba7acebbd92835942a63e836bb26f
+canary: nothing ran on host
+
+################ S6 adversarial: evidence for another commit refused
+fm-container-deliver: refusing to deliver t1: /tmp/fm-lab.JBWSw9/data/t1/delivery-evidence.md names 'head: dc10d712bc5f35114e5b6468dbdbbf4d7b10cc21' on its first line, not 'head: 3f8b8903b6fba7acebbd92835942a63e836bb26f'; its checks did not run on this commit
+exit=1 remote=3f8b8903b6fba7acebbd92835942a63e836bb26f
+canary: nothing ran on host
+
+################ S7 adversarial: worker plants .git/commondir pointing at a host repo
+fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree.
+Use '--' to separate paths from revisions, like this:
+'git <command> [<revision>...] -- [<file>...]'
+fm-container-deliver: refusing to deliver t1: the clone's .git holds a commondir file, which would point git at another repository's config
+exit=1 remote=3f8b8903b6fba7acebbd92835942a63e836bb26f
+canary: nothing ran on host
+
+################ S8 adversarial: origin redirected in worker config
+fm-container-deliver: refusing to deliver t1: the clone's origin 'https://github.com/attacker/loot.git' is not its project clone's origin 'https://github.com/acme/widget.git'
+exit=1 remote=3f8b8903b6fba7acebbd92835942a63e836bb26f gh-calls=0
+canary: nothing ran on host
+
+################ teardown
+0
+lab removed: yes

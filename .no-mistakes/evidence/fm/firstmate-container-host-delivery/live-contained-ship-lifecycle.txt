@@ -1,0 +1,98 @@
+### worker (podman exec into the product-launched container fm-ctr-pr-z1-998e27fc934c) commits, writes evidence, plants hostile git config + hooks
+b3f80da Add a README line
+fm/ctr-pr-z1
+sh: 3: cannot create .git/config: Read-only file system
+worker cannot write .git/config (read-only mount)
+sh: 4: cannot create .git/hooks/pre-push: Read-only file system
+chmod: cannot access '.git/hooks/pre-push': No such file or directory
+sh: 4: cannot create .git/hooks/pre-commit: Read-only file system
+chmod: cannot access '.git/hooks/pre-commit': No such file or directory
+sh: 4: cannot create .git/hooks/post-checkout: Read-only file system
+chmod: cannot access '.git/hooks/post-checkout': No such file or directory
+sh: 4: cannot create .git/hooks/reference-transaction: Read-only file system
+chmod: cannot access '.git/hooks/reference-transaction': No such file or directory
+### host: crew-state reads the ready-branch done
+state: unknown · source: none · no current-state source available
+canary: nothing ran on host
+### host delivery with canaries on PATH
+fm-container-deliver: refusing to deliver ctr-pr-z1: /tmp/fm-lab.EgMK6d/data/ctr-pr-z1/delivery-evidence.md is missing or not a regular file; the contained worker writes it after its checks pass
+exit=1
+remote fm/ctr-pr-z1= clone HEAD=b3f80da4d3b791a401525bbffac8abad04113fd3
+gh-axi:
+PR body:
+cat: /tmp/fm-lab-canary.m04Miy/gh.body: No such file or directory
+canary: nothing ran on host
+### host: fm-pr-check registers the delivered PR
+error: named head b3f80da4d3b791a401525bbffac8abad04113fd3 is not the head host delivery pushed (delivered_head=none in the task record)
+canary: nothing ran on host
+### host: fm-control relaunch of the contained task (hostile .git/config present)
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.EgMK6d
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.EgMK6d
+warning: /tmp/fm-lab.EgMK6d/data/ctr-pr-z1/launch-brief.md records no ship branch; defaulting to legacy branch fm/ctr-pr-z1
+warning: /tmp/fm-lab.EgMK6d/data/ctr-pr-z1/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode direct-PR - confirm its definition of done matches
+notice: ctr-pr-z1 ships mode=direct-PR while the standing posture for widget is no-mistakes - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state
+relaunched ctr-pr-z1 harness=claude from=claude model=default effort=default backend=tmux endpoint=lab:fm-ctr-pr-z1 worktree=/tmp/fm-lab-clones.8c7Y5k/ctr-pr-z1/widget
+relaunch exit=0
+runtime=container
+container=fm-ctr-pr-z1-998e27fc934c
+clone_base=b1b88f27f367f2c6f8aa84b529f2a61ac4bb8f34
+fm-ctr-pr-z1-998e27fc934c Up 1 second
+canary: nothing ran on host
+### host: teardown
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.EgMK6d
+REFUSED: worktree /tmp/fm-lab-clones.8c7Y5k/ctr-pr-z1/widget has work not on any remote and not landed.
+unpushed commits:
+b3f80da Add a README line
+Push the branch, land its PR, or get the captain's explicit OK to discard, then --force.
+teardown exit=1
+containers left: 1
+clone exists: yes
+canary: nothing ran on host
+### worker (podman exec into the product-launched container fm-ctr-pr-z1-998e27fc934c) commits, writes evidence, plants hostile git config + hooks
+fm/ctr-pr-z1
+tree-clean
+worker-ok
+done [at=1792222421]: ready in branch fm/ctr-pr-z1 for host delivery
+### host: crew-state reads the ready-branch done
+state: done · source: status-log · ready in branch fm/ctr-pr-z1 for host delivery
+canary: nothing ran on host
+### host delivery with canaries on PATH
+fm-container-deliver: pushed b3f80da4d3b791a401525bbffac8abad04113fd3 to fm/ctr-pr-z1 and published https://github.com/acme/widget/pull/3
+fm-container-deliver: done [at=1792222421]: PR https://github.com/acme/widget/pull/3 checks green
+exit=0
+remote fm/ctr-pr-z1=b3f80da4d3b791a401525bbffac8abad04113fd3 clone HEAD=b3f80da4d3b791a401525bbffac8abad04113fd3
+delivered_head=b3f80da4d3b791a401525bbffac8abad04113fd3
+done [at=1792222421]: PR https://github.com/acme/widget/pull/3 checks green
+gh-axi:
+pr list --repo acme/widget --state open --head fm/ctr-pr-z1 --limit 1 --fields url
+pr create --repo acme/widget --title=Add a README line --body-file /tmp/fm-deliver.VPgRAajj/body.md --base main --head fm/ctr-pr-z1
+pr view 3 --repo acme/widget
+api repos/acme/widget/pulls/3 --jq .head.sha
+pr checks 3 --repo acme/widget
+PR body:
+## Commits
+
+- b3f80da Add a README line
+
+## Evidence from the contained worker
+
+
+- cargo test (in container): ok
+
+---
+Built, checked, and committed inside its task container, which holds no forge credentials; Firstmate pushed b3f80da4d3b791a401525bbffac8abad04113fd3 and opened this PR from the host without running project code there.
+canary: nothing ran on host
+### host: fm-pr-check registers the delivered PR
+armed: state/ctr-pr-z1.check.sh
+canary: nothing ran on host
+### host: teardown
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.EgMK6d
+teardown: reaping leaked worktree process group for ctr-pr-z1: 264458
+teardown: force-killing leaked worktree process group for ctr-pr-z1: 264458
+widget: already current
+teardown ctr-pr-z1 complete (window lab:fm-ctr-pr-z1, worktree /tmp/fm-lab-clones.8c7Y5k/ctr-pr-z1/widget)
+Backlog: ctr-pr-z1 just finished (this home keeps no markdown backlog at /tmp/fm-lab.EgMK6d/data/backlog.md). Update /tmp/fm-lab.EgMK6d/data/backlog.md - move ctr-pr-z1 to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+teardown exit=0
+containers left: 0
+clone exists: no
+canary: nothing ran on host

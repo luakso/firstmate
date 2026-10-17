@@ -1,0 +1,82 @@
+LAB=/tmp/fm-lab.EgMK6d CLONES=/tmp/fm-lab-clones.8c7Y5k
+### contained no-mistakes ship
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.EgMK6d
+error: ctr-nm-z1 cannot launch: widget selects the container runtime (/tmp/fm-lab.EgMK6d/config/container/widget), and it cannot ship mode=no-mistakes: the no-mistakes pipeline runs its review, test, lint, PR, and CI-fix agents and its commands on the host, where they would run this project's code and read the captain's files (docs/container-runtime.md "Supported limits"); ship it mode=direct-PR, which bin/fm-container-deliver.sh delivers from the host, or mode=local-only
+exit=1
+### contained direct-PR ship
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.EgMK6d
+warning: /tmp/fm-lab.EgMK6d/data/ctr-pr-z1/launch-brief.md records no ship branch; defaulting to legacy branch fm/ctr-pr-z1
+warning: /tmp/fm-lab.EgMK6d/data/ctr-pr-z1/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode direct-PR - confirm its definition of done matches
+notice: ctr-pr-z1 ships mode=direct-PR while the standing posture for widget is no-mistakes - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state
+spawned ctr-pr-z1 harness=claude kind=ship mode=direct-PR yolo=off window=lab:fm-ctr-pr-z1 worktree=/tmp/fm-lab-clones.8c7Y5k/ctr-pr-z1/widget
+exit=0
+### task record
+window=lab:fm-ctr-pr-z1
+endpoint_task_id=ctr-pr-z1
+worktree=/tmp/fm-lab-clones.8c7Y5k/ctr-pr-z1/widget
+project=/tmp/fm-lab.EgMK6d/projects/widget
+harness=claude
+kind=ship
+mode=direct-PR
+yolo=off
+branch=fm/ctr-pr-z1
+tasktmp=/tmp/fm-ctr-pr-z1
+model=default
+effort=default
+busy_gen=g1792222307.265020.20034
+spawn_gen=s1792222307.264014.30266
+worktree_layout=clone
+runtime=container
+container=fm-ctr-pr-z1-998e27fc934c
+clone_base=b1b88f27f367f2c6f8aa84b529f2a61ac4bb8f34
+### clone HEAD vs clone_base
+b1b88f27f367f2c6f8aa84b529f2a61ac4bb8f34
+b1b88f27f367f2c6f8aa84b529f2a61ac4bb8f34
+### launch brief delivery section
+# Delivery under the container runtime
+This ship runs inside its own container, which holds no forge credentials and has no route to the forge, so you cannot push or open a PR.
+This section supersedes the Definition of done's instructions to push your branch, open and read back a PR with `gh-axi`, and report `done: PR {url}`: firstmate delivers your branch from the host instead.
+Work and commit only on your branch `fm/ctr-pr-z1`, built on the commit this copy started from; never rewrite history below that commit, and never change anything under `.github/`, because host delivery refuses such a branch.
+Run the project's own checks inside this container - its formatter check, linter, tests, and any dependency policy check it defines - on your final commit, and fix what they find: they are the validation this branch gets before review.
+Then write `/tmp/fm-lab.EgMK6d/data/ctr-pr-z1/delivery-evidence.md`: its first line is `head: <the full 40-character SHA of your HEAD>`, followed by the exact commands you ran with their result lines (not full logs) and anything a reviewer should know.
+Host delivery puts that file in the PR body and refuses one that names a different head, so rewrite it after every new commit.
+Leave the tree clean, with no uncommitted or untracked changes, append `done [at=<epoch>]: ready in branch fm/ctr-pr-z1 for host delivery` to the status file, and stop.
+That `done:` is accepted only when this copy's HEAD is the tip of `fm/ctr-pr-z1`.
+Firstmate then verifies the branch, pushes it, opens the PR, and watches its CI from the host; when CI fails, firstmate steers you with the failing checks and their failed-job logs, and you fix, commit, rewrite the evidence, and report ready again the same way.
+Commit nothing after a ready report unless firstmate asks.
+# Delivery under the container runtime
+This ship runs inside its own container, which holds no forge credentials and has no route to the forge, so you cannot push or open a PR.
+This section supersedes the Definition of done's instructions to push your branch, open and read back a PR with `gh-axi`, and report `done: PR {url}`: firstmate delivers your branch from the host instead.
+Work and commit only on your branch `fm/ctr-pr-z1`, built on the commit this copy started from; never rewrite history below that commit, and never change anything under `.github/`, because host delivery refuses such a branch.
+Run the project's own checks inside this container - its formatter check, linter, tests, and any dependency policy check it defines - on your final commit, and fix what they find: they are the validation this branch gets before review.
+Then write `/tmp/fm-lab.EgMK6d/data/ctr-pr-z1/delivery-evidence.md`: its first line is `head: <the full 40-character SHA of your HEAD>`, followed by the exact commands you ran with their result lines (not full logs) and anything a reviewer should know.
+Host delivery puts that file in the PR body and refuses one that names a different head, so rewrite it after every new commit.
+Leave the tree clean, with no uncommitted or untracked changes, append `done [at=<epoch>]: ready in branch fm/ctr-pr-z1 for host delivery` to the status file, and stop.
+That `done:` is accepted only when this copy's HEAD is the tip of `fm/ctr-pr-z1`.
+### podman ps
+fm-ctr-pr-z1-998e27fc934c Up 25 seconds
+### inside the contained worker: no route to github
+fatal: unable to access 'https://github.com/acme/widget.git/': CONNECT tunnel failed, response 403
+curl: (56) CONNECT tunnel failed, response 403
+### proxy log
+2026-10-17T07:31:49.802Z refused github.com:443
+2026-10-17T07:31:49.875Z allowed api.anthropic.com:443
+2026-10-17T07:31:49.875Z allowed api.anthropic.com:443
+2026-10-17T07:32:13.468Z refused github.com:443
+2026-10-17T07:32:13.474Z refused github.com:443
+### pane
+  and handle its contents as Firstmate operational input.
+● Auto mode lets Claude handle permission prompts automatically — Claude
+  checks each tool call for risky actions and prompt injection before
+  executing. Actions Claude identifies as safe are executed, while
+  actions Claude identifies as risky are blocked and Claude may try a
+  different approach. Ideal for long-running tasks. Sessions are
+  slightly more expensive. Claude can make mistakes that allow harmful
+  commands to run, it's recommended to only use in isolated
+  environments. Shift+Tab to change mode.
+● Please run /login · API Error: 401 OAuth access token is invalid.
+✻ Crunched for 2s · done 3:31 PM
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents

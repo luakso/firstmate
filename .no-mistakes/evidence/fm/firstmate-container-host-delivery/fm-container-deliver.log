@@ -1,0 +1,20 @@
+FM_TEST_BEGIN 2026-10-17T07:22:18Z tests/fm-container-deliver.test.sh family=pr-forge expected_gate_skip=none
+ok - a clean contained branch is pushed with host credentials, published, watched, and reported with no project code on the host
+ok - a redelivery refreshes the branch's open PR and never leaves it a draft
+ok - a redelivery trusts no checks until the PR head is the pushed commit, so an old head's failed rollup is never reported
+ok - a credential helper, filter, ssh command, fsmonitor, pushurl, or pushInsteadOf the worker writes never runs on the host or redirects the push
+ok - deliver, review diff, PR check, and teardown read a contained clone as data: no worker-named origin, diff driver, helper, or hook runs on the host
+ok - teardown refuses a contained clone's commit that host delivery never pushed and that never landed
+ok - teardown accepts a contained clone whose commit landed in a merged PR head it fetches only into its snapshot
+ok - a contained local-only branch is checked and imported from a snapshot, never from its clone's git config
+ok - a worker-written PR title reaches gh-axi only as the title, never as a flag
+ok - an object store swapped for a symlink is refused before anything is changed through it
+ok - a delivery a later one superseded never reports, so it cannot mask the later delivery's CI failure
+ok - green, failed, absent, and unsettled CI each end in one status line, with failed-job logs saved for the worker
+ok - every branch host delivery cannot verify is refused before anything is pushed or published
+ok - a remote branch that diverged is refused, never force-pushed
+# all fm-container-deliver tests passed
+FM_TEST_END 2026-10-17T07:22:44Z tests/fm-container-deliver.test.sh exit=0 duration_ms=26629 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=26676
+FM_TEST_SUMMARY_FAMILY family=pr-forge count=1 duration_ms=26629 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-container-deliver.test.sh duration_ms=26629

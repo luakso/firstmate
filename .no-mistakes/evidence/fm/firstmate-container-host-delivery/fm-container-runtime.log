@@ -1,0 +1,24 @@
+FM_TEST_BEGIN 2026-10-17T07:22:44Z tests/fm-container-runtime.test.sh family=backend-dispatch expected_gate_skip=none
+ok - the runner refuses a token file others can read
+ok - the runner refuses to start a container whose egress proxy is not up
+ok - the runner refuses a spec it cannot fully read
+ok - the runner runs podman with exactly the isolation flags, mounts, and environment
+ok - the container mounts nothing outside the allow-list and no runtime socket
+ok - the token reaches podman only through a private env file removed after the launch
+ok - the runner relays the container's hook events to the host busy contract and turn-end notification
+ok - a pane running the container runner reads as a harness process, never a bare shell
+ok - the container's TZ is the host's zone by name, and nothing else
+ok - a container task's agent is read from its recorded container, and every other task from its endpoint
+ok - the egress proxy tunnels only allow-listed host:port pairs and refuses everything else
+ok - a selected project's ship launches inside its container, with the sandbox replaced and the relay wired
+ok - a container scout hands its captain-question inventory to firstmate
+ok - a contained direct-PR ship spawns with the host-delivery handoff and its clone's starting commit recorded
+ok - a contained ship of a Gerrit project is refused, because host delivery opens only GitHub pull requests
+ok - projects that do not select the container launch exactly as before
+ok - a project that selects the container refuses every launch the container cannot hold, before any record exists
+ok - a container spawn refuses to write hooks through a planted symlink
+# all fm-container-runtime tests passed
+FM_TEST_END 2026-10-17T07:23:07Z tests/fm-container-runtime.test.sh exit=0 duration_ms=22786 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=22826
+FM_TEST_SUMMARY_FAMILY family=backend-dispatch count=1 duration_ms=22786 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-container-runtime.test.sh duration_ms=22786
