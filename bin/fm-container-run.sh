@@ -30,6 +30,7 @@
 #      container is gone (--rm removes it).
 # Firstmate's own supervision, the proxy, and the relay never enter the
 # container.
+# shellcheck disable=SC2154 # the FM_CS_* spec fields are set by fm_container_spec_load (bin/fm-container-lib.sh).
 set -u
 
 if [ "${FM_CONTAINER_RUN_NAMED:-}" != 1 ]; then
