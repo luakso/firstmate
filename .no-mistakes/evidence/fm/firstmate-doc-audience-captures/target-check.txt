@@ -1,0 +1,5 @@
+$ git rev-parse HEAD
+4aa996b3a9916a89513d7932136840b9973f9407
+$ bin/fm-doc-audience-check.sh
+fm-doc-audience-check: ok surfaces=119 local_links=730
+exit=0

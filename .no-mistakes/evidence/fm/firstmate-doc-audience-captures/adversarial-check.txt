@@ -1,0 +1,9 @@
+$ bin/fm-doc-audience-check.sh --inventory <drop.json>
+fm-doc-audience-check: unclassified: tests/captures/claude-2.1.296/slash-exit-menu.txt
+exit=1
+$ bin/fm-doc-audience-check.sh --inventory <bogus.json>
+fm-doc-audience-check: tests/captures/claude-2.1.296/README.md: unsupported audience 'bogus-audience'
+exit=1
+$ bin/fm-doc-audience-check.sh --inventory <dup.json>
+fm-doc-audience-check: surfaces classified more than once: tests/captures/claude-2.1.296/README.md
+exit=1

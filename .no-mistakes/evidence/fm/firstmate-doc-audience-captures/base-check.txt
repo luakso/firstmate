@@ -1,0 +1,3 @@
+$ (base 5aef253) bin/fm-doc-audience-check.sh
+fm-doc-audience-check: unclassified: tests/captures/claude-2.1.296/README.md, tests/captures/claude-2.1.296/slash-exit-menu.txt
+exit=1
