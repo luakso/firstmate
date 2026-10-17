@@ -62,6 +62,8 @@
 #   (z4) clone + local-only + not merged                      -> REFUSE, clone kept
 #   (z5) clone whose marker names another task, even --force  -> REFUSE, nothing removed
 #   (z6) clone scout                                          -> ALLOW, clone removed
+#   (z7) container clone, podman removes its container        -> ALLOW, container then clone removed
+#   (z8) container clone, podman cannot remove it             -> REFUSE, clone kept
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -964,6 +966,67 @@ test_clone_scout_is_removed() {
   expect_code 0 "$rc" "clone-scout: a scout's scratch clone should be torn down"$'\n'"$(cat "$case_dir/stderr")"
   assert_absent "$case_dir/clones/task-x1" "clone-scout: teardown left the scout's clone behind"
   pass "a scout's scratch task clone is removed"
+}
+
+# A container-runtime task (bin/fm-container-lib.sh) records its container in
+# its task record; teardown removes that container before the clone it mounts,
+# and leaves the project's shared cargo volume alone.
+make_container_scout_case() {  # <name> <podman-rm-status>
+  local case_dir
+  case_dir=$(make_clone_case "$1")
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=firstmate:fm-task-x1" \
+    "endpoint_task_id=task-x1" \
+    "worktree=$(clone_path "$case_dir")" \
+    "project=$case_dir/project" \
+    "kind=scout" \
+    "worktree_layout=clone" \
+    "runtime=container" \
+    "container=fm-task-x1-0123456789ab" \
+    "spawn_gen=teardown-test-task-x1"
+  cat > "$case_dir/fakebin/podman" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$case_dir/podman.log"
+[ "\${1:-}" != rm ] || exit $2
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/podman"
+  mkdir -p "$case_dir/data/task-x1"
+  printf '# Report\n\n## Captain questions\nNone.\n' > "$case_dir/data/task-x1/report.md"
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$case_dir/home" FM_STATE_OVERRIDE="$case_dir/state" \
+    FM_DATA_OVERRIDE="$case_dir/data" FM_CONFIG_OVERRIDE="$case_dir/config" \
+    PATH="$case_dir/fakebin:$PATH" \
+    "$ROOT/bin/fm-captain-hold.sh" complete task-x1 --none >/dev/null \
+    || fail "$1: could not record the scout's completed captain-call inventory"
+  printf '%s\n' "$case_dir"
+}
+
+test_container_task_teardown_removes_its_container_first() {
+  local case_dir rc
+  case_dir=$(make_container_scout_case container-scout 0)
+  set +e
+  run_clone_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "container-scout: a container scout should be torn down"$'\n'"$(cat "$case_dir/stderr")"
+  assert_grep "rm --force --ignore --time 10 fm-task-x1-0123456789ab" "$case_dir/podman.log" \
+    "container-scout: teardown did not remove the task's recorded container"
+  assert_no_grep "volume" "$case_dir/podman.log" "container-scout: teardown touched a podman volume"
+  assert_absent "$case_dir/clones/task-x1" "container-scout: teardown left the container task's clone behind"
+  pass "a container task's teardown removes its container and keeps the shared cargo volume"
+}
+
+test_container_task_teardown_refuses_when_its_container_remains() {
+  local case_dir rc
+  case_dir=$(make_container_scout_case container-stuck 1)
+  set +e
+  run_clone_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "container-stuck: teardown removed the clone while its container could still be running"
+  assert_grep "container could not be removed" "$case_dir/stderr" "container-stuck: the refusal does not name the container"
+  assert_present "$(clone_path "$case_dir")" "container-stuck: teardown removed the clone a live container may still write"
+  pass "a container task's teardown refuses while its container cannot be removed"
 }
 
 test_no_mistakes_origin_remote_allows() {
@@ -4444,6 +4507,8 @@ test_clone_local_only_merged_into_project_main_allows
 test_clone_local_only_unmerged_refuses
 test_clone_with_foreign_marker_refuses_even_forced
 test_clone_scout_is_removed
+test_container_task_teardown_removes_its_container_first
+test_container_task_teardown_refuses_when_its_container_remains
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed

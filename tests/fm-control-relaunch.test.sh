@@ -504,6 +504,58 @@ test_sandboxed_relaunch_refuses_a_linked_worktree() {
   pass "fm-control relaunch: a sandboxed relaunch refuses a linked worktree and keeps a task clone's layout"
 }
 
+# A relaunch keeps a task in the runtime it was spawned in (bin/fm-spawn.sh
+# header "Container runtime"): a container task relaunches through the
+# container runner under its recorded container name, refuses once its project
+# file is gone, and a task spawned outside the container refuses once its
+# project selects it.
+add_container_config() {  # <case-dir>
+  mkdir -p "$1/home/config/container" "$1/fakebin"
+  printf 'auto\n' > "$1/home/config/claude-permission-mode"
+  printf 'image=localhost/test-image:1\n' > "$1/home/config/container/proj"
+  printf 'sk-ant-oat01-relaunch-test\n' > "$1/home/config/container-claude-token"
+  chmod 600 "$1/home/config/container-claude-token"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$1/fakebin/podman"
+  chmod +x "$1/fakebin/podman"
+}
+
+test_container_relaunch_keeps_the_task_in_its_container() {
+  local dir id out rc
+  id=rl-container
+  dir=$(new_case container "$id")
+  add_clone_ship_task "$dir" "$id" claude
+  sed -i.bak 's/^mode=.*/mode=local-only/' "$dir/home/state/$id.meta" && rm -f "$dir/home/state/$id.meta.bak"
+  printf '%s\n' runtime=container "container=fm-$id-0123456789ab" >> "$dir/home/state/$id.meta"
+  # The home its first container launch prepared, which a relaunch reuses untouched.
+  mkdir -p "${ADDED_CLONE%/*}/container/home/.claude"
+  printf '{"hasCompletedOnboarding":true}\n' > "${ADDED_CLONE%/*}/container/home/.claude/.claude.json"
+  add_container_config "$dir"
+  out=$(run_control "$dir" "$id" relaunch --note "resuming in the container"); rc=$?
+  expect_code 0 "$rc" "a container task's relaunch should succeed"$'\n'"$out"
+  assert_grep "fm-container-run.sh" "$dir/fake/literal" "the relaunch launched the worker outside its container"
+  [ "$(grep -c '^runtime=' "$dir/home/state/$id.meta")" = 1 ] && [ "$(meta_field "$dir" "$id" runtime)" = container ] \
+    || fail "the relaunch did not keep exactly one runtime=container line"$'\n'"$(cat "$dir/home/state/$id.meta")"
+  [ "$(grep -c '^container=' "$dir/home/state/$id.meta")" = 1 ] || fail "the relaunch duplicated the container line"
+  case "$(meta_field "$dir" "$id" container)" in fm-"$id"-*) ;; *) fail "the relaunch lost the container name" ;; esac
+
+  rm -f "$dir/home/config/container/proj"
+  : > "$dir/fake/literal"
+  out=$(run_control "$dir" "$id" relaunch --note "resuming without the project file"); rc=$?
+  [ "$rc" -ne 0 ] || fail "a container task relaunched after its project file was removed"$'\n'"$out"
+  assert_contains "$out" "no longer selects it" "the refusal does not say the project file is gone"
+  assert_no_grep "Firstmate operational input waiting: read" "$dir/fake/literal" "a refused container relaunch launched a replacement"
+
+  id=rl-container-late
+  dir=$(new_case container-late "$id")
+  add_clone_ship_task "$dir" "$id" claude
+  sed -i.bak 's/^mode=.*/mode=local-only/' "$dir/home/state/$id.meta" && rm -f "$dir/home/state/$id.meta.bak"
+  add_container_config "$dir"
+  out=$(run_control "$dir" "$id" relaunch --note "resuming after the project opted in"); rc=$?
+  [ "$rc" -ne 0 ] || fail "a task spawned outside the container relaunched after its project opted in"$'\n'"$out"
+  assert_contains "$out" "was spawned outside it" "the refusal does not say the task predates the opt-in"
+  pass "fm-control relaunch: a container task relaunches only into its container"
+}
+
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text() {
   local dir out rc
   dir=$(new_case pending-exit rl43)
@@ -2503,6 +2555,7 @@ test_relaunch_moves_a_drifted_item_back_in_flight() {
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_sandboxed_relaunch_drops_committed_project_settings
 test_sandboxed_relaunch_refuses_a_linked_worktree
+test_container_relaunch_keeps_the_task_in_its_container
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text
 test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven
 test_relaunch_from_linked_home_preserves_recorded_worktree

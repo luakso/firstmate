@@ -496,6 +496,32 @@ EOF
   pass "fm-promote: a sandboxed Claude scout promoted to no-mistakes learns the fence's no-mistakes spelling"
 }
 
+# A container-runtime scout keeps running in its container, which reaches no
+# forge and no no-mistakes daemon, so promotion accepts only local-only.
+test_promotion_of_a_container_scout_is_local_only() {
+  local home id mode out status
+  home="$TMP_ROOT/promote-container/home"
+  mkdir -p "$home/state" "$home/config"
+  for mode in no-mistakes direct-PR local-only; do
+    id="promote-container-$mode-e5"
+    printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\nharness=claude\nruntime=container\n' "$id" > "$home/state/$id.meta"
+    FM_HOME="$home" "$BRIEF" "$id" fixture-project --scout </dev/null >/dev/null 2>&1 \
+      || fail "container promotion scout brief $id should scaffold"
+    fill_brief_subsections "$home/data/$id/brief.md" "Ship the contained fixture." "Keep the fixture small."
+    out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode "$mode" --yolo off </dev/null 2>&1)
+    status=$?
+    if [ "$mode" = local-only ]; then
+      expect_code 0 "$status" "a container scout's local-only promotion should succeed"$'\n'"$out"
+      assert_grep "kind=ship" "$home/state/$id.meta" "the local-only promotion did not flip the record to a ship"
+    else
+      [ "$status" -ne 0 ] || fail "a container scout was promoted to $mode"
+      assert_contains "$out" "can only be promoted with --mode local-only" "the $mode refusal does not say why"
+      assert_grep "kind=scout" "$home/state/$id.meta" "the refused $mode promotion changed the task record"
+    fi
+  done
+  pass "fm-promote: a container-runtime scout promotes only to a local-only ship"
+}
+
 test_local_merge_uses_the_recorded_ship_branch() {
   local home proj id main fix out
   home="$TMP_ROOT/local-merge-branch/home"
@@ -1793,6 +1819,7 @@ test_promotion_delivers_the_real_definition_of_done
 test_promotion_persists_the_selected_ship_branch
 test_promotion_branch_command_is_shell_safe
 test_promotion_of_a_sandboxed_claude_scout_spells_no_mistakes_commands
+test_promotion_of_a_container_scout_is_local_only
 test_local_merge_uses_the_recorded_ship_branch
 test_local_merge_imports_a_task_clone_branch
 test_project_mode_matches_whole_multiword_names
