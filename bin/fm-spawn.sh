@@ -4973,6 +4973,16 @@ if [ "$KIND" != secondmate ]; then
     # neither this home's state/ nor fm-busy-event.sh exists, so each one
     # appends its event to the task's event file and the host runner applies
     # it with the gen minted above (fm_container_relay_event).
+    if [ "$CONTAINER_ACTIVE" = 1 ]; then
+      if [ -L "$WT/.claude" ] || { [ -e "$WT/.claude" ] && { [ ! -d "$WT/.claude" ] || [ ! -O "$WT/.claude" ]; }; }; then
+        echo "error: refusing to write claude hooks: $WT/.claude must be a directory owned by you, not a symlink" >&2
+        exit 1
+      fi
+      if [ -L "$WT/.claude/settings.local.json" ] || { [ -e "$WT/.claude/settings.local.json" ] && { [ ! -f "$WT/.claude/settings.local.json" ] || [ ! -O "$WT/.claude/settings.local.json" ]; }; }; then
+        echo "error: refusing to write claude hooks: $WT/.claude/settings.local.json must be a regular file owned by you, not a symlink" >&2
+        exit 1
+      fi
+    fi
     mkdir -p "$WT/.claude"
     if [ "$CONTAINER_ACTIVE" = 1 ]; then
       j_submit=$(json_escape "$(fm_container_hook_command "$CONTAINER_DIR/events" busy user-prompt-submit)")
@@ -4987,9 +4997,16 @@ if [ "$KIND" != secondmate ]; then
       j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
       j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
     fi
-    cat >"$WT/.claude/settings.local.json" <<EOF
+    hooks_out="$WT/.claude/settings.local.json"
+    if [ "$CONTAINER_ACTIVE" = 1 ]; then
+      hooks_out=$(mktemp "$WT/.claude/settings.local.json.XXXXXX") || exit 1
+    fi
+    cat >"$hooks_out" <<EOF
 {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
+    if [ "$CONTAINER_ACTIVE" = 1 ]; then
+      mv -f "$hooks_out" "$WT/.claude/settings.local.json" || exit 1
+    fi
     exclude_path '.claude/settings.local.json'
     ;;
   devin)

@@ -458,6 +458,37 @@ test_spawn_refuses_what_the_container_cannot_run() {
   pass "a project that selects the container refuses every launch the container cannot hold, before any record exists"
 }
 
+test_spawn_refuses_a_worker_plantable_symlink_for_the_hooks_file() {
+  local victim out status
+  make_spawn_world symlink proj-e
+  victim="$TMP_ROOT/spawn-symlink/victim"
+  printf 'host file\n' > "$victim"
+  mkdir -p "$S_PROJ/.claude"
+  ln -s "$victim" "$S_PROJ/.claude/settings.local.json"
+  git -C "$S_PROJ" add -f .claude/settings.local.json
+  git -C "$S_PROJ" commit -q -m 'plant hooks symlink'
+  git -C "$S_PROJ" push -q origin HEAD:main
+  out=$(run_container_spawn ctr-sym1-z5 --mode local-only --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "the spawn wrote hooks through a symlinked settings.local.json"$'\n'"$out"
+  assert_contains "$out" "settings.local.json must be a regular file owned by you" "the refusal does not say why"
+  [ "$(cat "$victim")" = 'host file' ] || fail "the symlink target was overwritten"
+
+  make_spawn_world dirlink proj-f
+  victim="$TMP_ROOT/spawn-dirlink/victimdir"
+  mkdir -p "$victim"
+  ln -s "$victim" "$S_PROJ/.claude"
+  git -C "$S_PROJ" add -f .claude
+  git -C "$S_PROJ" commit -q -m 'plant .claude symlink'
+  git -C "$S_PROJ" push -q origin HEAD:main
+  out=$(run_container_spawn ctr-sym2-z5 --mode local-only --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "the spawn wrote hooks through a symlinked .claude"$'\n'"$out"
+  assert_contains "$out" "must be a directory owned by you" "the refusal does not say why"
+  [ -z "$(ls -A "$victim")" ] || fail "the symlinked .claude directory was written into"
+  pass "a container spawn refuses to write hooks through a planted symlink"
+}
+
 test_runner_refuses_a_token_others_can_read
 test_runner_refuses_when_the_proxy_cannot_start
 test_runner_refuses_a_spec_with_an_unknown_key
@@ -471,5 +502,6 @@ test_spawn_launches_a_selected_project_inside_its_container
 test_spawn_gives_a_container_scout_the_container_completion_overlay
 test_spawn_leaves_unselected_projects_unchanged
 test_spawn_refuses_what_the_container_cannot_run
+test_spawn_refuses_a_worker_plantable_symlink_for_the_hooks_file
 
 echo "# all fm-container-runtime tests passed"
