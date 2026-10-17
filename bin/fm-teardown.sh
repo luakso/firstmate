@@ -3596,6 +3596,18 @@ fi
 # kind=secondmate: a secondmate home's own runtime lifecycle is owned by the
 # dedicated process-event and firstmate-home removal machinery further below,
 # not by task-worktree cleanup.
+# A container-runtime task's container (bin/fm-container-lib.sh) goes first: it
+# holds the clone mounted, and --rm removes it only once its process exits.
+# Removing it never touches the project's shared cargo cache volume. A container
+# podman cannot remove may still be writing the clone, so teardown stops here.
+if [ "$KIND" != secondmate ] && [ "$(meta_value "$META" runtime)" = container ]; then
+  # shellcheck source=bin/fm-container-lib.sh
+  . "$SCRIPT_DIR/fm-container-lib.sh"
+  fm_container_remove "$(meta_value "$META" container)" || {
+    echo "REFUSED: task $ID's container could not be removed; preserving its clone for inspection or retry." >&2
+    exit 1
+  }
+fi
 if [ "$KIND" != secondmate ] && teardown_owns_worktree; then
   conclude_task_no_mistakes_run "$WT"
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"

@@ -25,6 +25,9 @@
 # instructions with the fence's no-mistakes command spelling
 # (fm_brief_sandbox_no_mistakes_overlay); brief.md does not carry it, because a
 # relaunch through bin/fm-spawn.sh adds it whenever that launch is sandboxed.
+# A scout in the container runtime (runtime=container in its task record) keeps
+# running in its container, which reaches no forge and no no-mistakes daemon, so
+# it promotes only with --mode local-only.
 # A scout records no delivery posture, so promotion is where this task's delivery
 # contract is decided: --mode, --yolo, and the ship branch resolved from
 # --branch-prefix are written into the meta alongside the kind= flip. Firstmate resolves all three at promotion time, having just
@@ -225,6 +228,14 @@ else
 fi
 if [ -z "$(printf '%s' "$INTENT_BODY" | tr -d '[:space:]')" ]; then
   echo "error: $SCOUT_BRIEF has no provenance-marked Captain's intent; add the captain's actual words before promotion" >&2
+  exit 1
+fi
+
+# A container-runtime scout (bin/fm-container-lib.sh) keeps running in its
+# container after promotion, where it has no forge credentials and no
+# no-mistakes daemon, so it can only become a local-only ship.
+if [ "$(sed -n 's/^runtime=//p' "$META" | head -n 1)" = container ] && [ "$MODE" != local-only ]; then
+  echo "error: $ID runs in the container runtime, whose worker has no forge credentials and no no-mistakes daemon, so it can only be promoted with --mode local-only" >&2
   exit 1
 fi
 

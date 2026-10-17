@@ -282,6 +282,7 @@ Codex App support is recorded in `docs/codex-app-backend.md`; it is not selectab
 
 Crewmates never intentionally touch your project clone; [treehouse](https://github.com/kunchenguid/treehouse) pools clean worktrees for tmux, herdr, zellij, and cmux tasks, while Orca creates its own worktrees for `backend=orca`.
 A sandboxed Claude ship or scout gets its own clone of the project clone instead, because a linked worktree's shared git data would fall inside its sandbox's write grant; [`bin/fm-task-clone-lib.sh`](../bin/fm-task-clone-lib.sh) owns that layout and its ownership proof.
+A worker of a project that selects the [container runtime](container-runtime.md) also gets a task clone and runs inside its own rootless Podman container, with only that clone and its Firstmate channels mounted; [`bin/fm-container-lib.sh`](../bin/fm-container-lib.sh) owns the mount, network, and hook-relay design.
 The [`fm-spawn.sh` header](../bin/fm-spawn.sh) owns ship/scout worktree isolation and fresh-base refusal rules, including spawns from linked homes.
 Portable regressions live in [`tests/fm-spawn-pool-base-freshen.test.sh`](../tests/fm-spawn-pool-base-freshen.test.sh) for spawn isolation and base freshness, and [`tests/fm-control-relaunch.test.sh`](../tests/fm-control-relaunch.test.sh) for preserving the recorded copy on relaunch.
 

@@ -9,7 +9,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | --- | --- |
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
-| Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Claude sandbox](#claude-sandbox-configclaude-sandbox), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), and [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist) |
+| Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Claude sandbox](#claude-sandbox-configclaude-sandbox), [container runtime](#container-runtime-configcontainer), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), and [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
@@ -921,6 +921,61 @@ Supported limits:
 
 `bin/fm-spawn.sh` reads the file on every spawn and relaunch, so a change reaches the next launch without a restart.
 Like `config/claude-permission-mode`, it is a captain-wide safety preference inherited into secondmate homes, so a secondmate's own Claude crewmates and scouts are fenced too while the secondmate itself is not: it must still reach its runtime backend and write its own home's state.
+
+## Container runtime (config/container)
+
+The optional local, gitignored `config/container/<project>` selects the container runtime level for one project: every Claude ship and scout of that project runs inside its own rootless Podman container instead of on the host.
+Every other project, every secondmate, and Firstmate's own supervision launch unchanged.
+[`docs/container-runtime.md`](container-runtime.md) owns what the container holds and can reach, the setup, the image, and the live verification procedure; this section owns the two files.
+
+### Project file
+
+`<project>` is the name of the project's directory, the same name `data/projects.md` registers, such as `config/container/tokenbook`.
+The file holds `key=value` lines; blank lines and lines beginning with `#` are ignored.
+
+| Key | Required | Meaning | Default |
+| --- | --- | --- | --- |
+| `image` | yes | The Podman image reference the worker runs in, such as `localhost/tokenbook-dev:latest`. | none |
+| `pids-limit` | no | The container's process limit (`--pids-limit`), a positive integer. | `2048` |
+| `memory` | no | The container's memory limit (`--memory`), such as `8g` or `4096m`. | `8g` |
+
+```text
+image=localhost/tokenbook-dev:latest
+pids-limit=2048
+memory=8g
+```
+
+An unreadable file, an unknown key, a malformed value, or a missing `image` refuses every spawn and relaunch of that project before any endpoint, worktree, or task record exists, rather than launching the project outside the container it selected.
+
+### Claude login (config/container-claude-token)
+
+Claude inside a container cannot use the captain's own login, which lives in `~/.claude` and is never mounted.
+It logs in with the long-lived token `claude setup-token` prints, which the captain stores in `config/container-claude-token`: the token alone on the first line, in a regular file the captain owns with mode `0600` (or `0400`).
+One file serves every container project.
+Only the captain creates, rotates, or removes it.
+
+The file is checked at every container spawn and again at every launch.
+A missing file, a symlink, a file owned by someone else, any group or other permission bit, or anything but one token refuses the spawn, and the diagnostic never prints the token.
+The token reaches Podman only through a private `0600` env file that the launch removes when the container exits, never on a command line or in a task record.
+The agent inside the container can read it from its own environment, so the captain scopes it to this purpose and rotates it.
+
+### Refusals and relaunch
+
+With a project file present, a spawn of that project also refuses, before anything exists, when any of these holds:
+
+- the harness is not `claude`, or the launch is a raw command;
+- the backend is `orca`, whose linked worktree the container cannot use;
+- a ship's delivery mode is not `local-only`, because a contained worker has no forge credentials and no no-mistakes daemon;
+- [`config/claude-permission-mode`](#claude-permission-mode-configclaude-permission-mode) is not `auto`, because the container's fresh Claude config would park bypass mode on its confirmation dialog;
+- a [worker account pin](#worker-account-pin-configclaude-account-configpi-account) is declared, because a contained worker logs in with the token file instead;
+- the brief was scaffolded with `--herdr-lab`, whose worker needs Herdr and tmux sockets the container never mounts;
+- `podman` or `node` is not installed, or the token file is refused as above.
+
+[`config/claude-sandbox`](#claude-sandbox-configclaude-sandbox) does not apply to a contained worker: the container replaces the sandbox for it.
+
+`bin/fm-spawn.sh` reads both files on every spawn and relaunch, so a change reaches the next launch without a restart.
+A relaunch keeps a task in the runtime it was spawned in: a container task refuses to relaunch once its project file is gone, and a task spawned outside the container refuses to relaunch once its project selects it, so neither ever runs unconfined by accident; tear such a task down and spawn it again.
+Neither file is inherited into secondmate homes.
 
 ## Worker account pin (config/claude-account, config/pi-account)
 

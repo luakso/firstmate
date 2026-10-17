@@ -366,6 +366,26 @@
 #   A sandboxed no-mistakes ship's launch brief tells it how to spell every
 #   no-mistakes command so it still matches the no-mistakes exclusion
 #   (fm_brief_sandbox_no_mistakes_overlay).
+# Container runtime (config/container/<project>):
+#   Opt-in per project; a project with no such file launches unchanged. A ship
+#   or scout of a project that has one runs its Claude worker inside its own
+#   rootless Podman container: the pane runs bin/fm-container-run.sh, which
+#   runs `podman run --rm -it`, instead of claude
+#   (bin/fm-container-lib.sh owns what the container can see and reach, and
+#   docs/container-runtime.md the operator contract). The container replaces
+#   the Claude sandbox for that worker, so config/claude-sandbox adds nothing to
+#   its launch. A fresh spawn works in a task clone, as a sandboxed one does,
+#   and its claude hooks append events the runner relays to the busy-state
+#   contract on the host. Claude's own config is a fresh one beside the clone,
+#   marked past onboarding, with the clone's trust registered there and never
+#   in the captain's store. The task record gains runtime=container and the
+#   container's name, which teardown removes. Before any endpoint, worktree, or
+#   record exists, the spawn refuses a malformed project file, a harness other
+#   than claude or a raw command, backend=orca, a ship whose mode is not
+#   local-only, a permission mode other than auto, a worker account pin, a
+#   --herdr-lab brief, missing podman or node, and a missing or shared
+#   config/container-claude-token. A relaunch keeps a task in the runtime it was
+#   spawned in and refuses when the project file no longer agrees.
 # Worker account pin (config/claude-account, config/pi-account):
 #   Opt-in. With no file, a Claude or Pi launch is unchanged: Claude still
 #   receives this process's own CLAUDE_CONFIG_DIR when it is set, and Pi the
@@ -718,6 +738,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
 # shellcheck source=bin/fm-task-clone-lib.sh
 . "$SCRIPT_DIR/fm-task-clone-lib.sh"
+# shellcheck source=bin/fm-container-lib.sh
+. "$SCRIPT_DIR/fm-container-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -1788,6 +1810,7 @@ RAW_LAUNCH=0
 # validation teardown uses, so a malformed, ambiguous, or foreign record
 # refuses here exactly as it refuses there.
 RELAUNCH_PRIOR_HARNESS=
+RELAUNCH_RUNTIME=
 # 1 when the recorded endpoint is authoritatively gone and this relaunch must
 # create a fresh one for the task rather than adopt its recorded address.
 RELAUNCH_REBIND=0
@@ -1899,6 +1922,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fi
   RELAUNCH_WT=$(fm_meta_get "$RELAUNCH_META" worktree)
   RELAUNCH_WT_LAYOUT=$(fm_meta_get "$RELAUNCH_META" worktree_layout)
+  RELAUNCH_RUNTIME=$(fm_meta_get "$RELAUNCH_META" runtime)
   [ -n "$RELAUNCH_WT" ] && [ -d "$RELAUNCH_WT" ] || {
     echo "error: task $ID's recorded worktree '${RELAUNCH_WT:-none}' is missing; refusing to relaunch without the local copy its work lives in" >&2
     exit 1
@@ -2372,6 +2396,66 @@ if [ "$CLAUDE_SANDBOX" = on ] && [ "$HARNESS" = claude ] && [ "$KIND" != secondm
   fi
   CLAUDE_SANDBOX_ACTIVE=1
 fi
+# Container runtime (config/container/<project>, header above): a project that
+# selects it runs every ship and scout worker inside its own rootless Podman
+# container, which replaces the Claude sandbox for that worker. Every refusal
+# below happens before any endpoint, worktree, or record exists, so a project
+# that selected the container never launches a worker outside it.
+CONTAINER_ACTIVE=0
+CONTAINER_PROJECT=
+CONTAINER_NAME=
+if [ "$KIND" != secondmate ]; then
+  # The project's name is its directory's basename, resolved the way the
+  # ship's delivery check below resolves it.
+  case "$PROJ" in
+  projects/*) CONTAINER_PROJECT="$PROJECTS/${PROJ#projects/}" ;;
+  *) CONTAINER_PROJECT=$PROJ ;;
+  esac
+  CONTAINER_PROJECT=$(cd "$CONTAINER_PROJECT" 2>/dev/null && pwd) || CONTAINER_PROJECT=${PROJ%/}
+  CONTAINER_PROJECT=${CONTAINER_PROJECT##*/}
+  container_config_rc=0
+  fm_container_project_config "$CONFIG" "$CONTAINER_PROJECT" || container_config_rc=$?
+  [ "$container_config_rc" -ne 2 ] || exit 1
+  if [ "$RELAUNCH" -eq 1 ] && [ "$RELAUNCH_RUNTIME" = container ] && [ "$container_config_rc" -ne 0 ]; then
+    echo "error: task $ID runs in the container runtime, but $(fm_container_config_path "$CONFIG" "$CONTAINER_PROJECT") no longer selects it; restore that file to relaunch it, rather than relaunching its worker outside the container" >&2
+    exit 1
+  fi
+  if [ "$RELAUNCH" -eq 1 ] && [ "$RELAUNCH_RUNTIME" != container ] && [ "$container_config_rc" -eq 0 ]; then
+    echo "error: $CONTAINER_PROJECT selects the container runtime, but task $ID was spawned outside it; tear it down and spawn it again rather than relaunching it unconfined" >&2
+    exit 1
+  fi
+  [ "$container_config_rc" -ne 0 ] || CONTAINER_ACTIVE=1
+fi
+if [ "$CONTAINER_ACTIVE" = 1 ]; then
+  container_refusal=
+  if [ "$RAW_LAUNCH" -eq 1 ] || [ "$HARNESS" != claude ]; then
+    container_refusal="the container runtime runs only the claude harness, and this launch is ${HARNESS:-a raw command}; spawn it with --harness claude"
+  elif [ "$BACKEND" = orca ]; then
+    container_refusal="backend=orca provides its own linked worktree, which the container cannot use; spawn it on another backend"
+  elif [ "$KIND" = ship ] && [ "$MODE" != local-only ]; then
+    container_refusal="a contained worker has no forge credentials and no no-mistakes daemon, so it can only ship mode=local-only, not mode=$MODE"
+  elif [ "$CLAUDE_PERMISSION_MODE" != auto ]; then
+    container_refusal="the container's fresh Claude config would park bypass mode on its confirmation dialog, so config/claude-permission-mode must be auto"
+  elif [ "$RELAUNCH" -eq 1 ] && [ "${RELAUNCH_WT_LAYOUT:-}" != clone ]; then
+    container_refusal="its recorded worktree is not a task clone"
+  elif ! command -v podman >/dev/null 2>&1; then
+    container_refusal="podman is not installed (docs/container-runtime.md has the setup)"
+  elif ! command -v node >/dev/null 2>&1; then
+    container_refusal="node is not installed, and the container's egress proxy needs it"
+  elif ! fm_container_token_read "$(fm_container_token_path "$CONFIG")"; then
+    container_refusal="the container's Claude login is not usable (see the error above)"
+  fi
+  unset FM_CONTAINER_TOKEN
+  if [ -n "$container_refusal" ]; then
+    echo "error: $ID cannot launch: $CONTAINER_PROJECT selects the container runtime ($(fm_container_config_path "$CONFIG" "$CONTAINER_PROJECT")), and $container_refusal" >&2
+    exit 1
+  fi
+  CLAUDE_SANDBOX_ACTIVE=0
+  CONTAINER_NAME=$(fm_container_name "$ID" "$FM_HOME") || {
+    echo "error: could not derive a container name for $ID" >&2
+    exit 1
+  }
+fi
 # A sandboxed worker's Bash may write its launch directory, and when that is a
 # linked worktree Claude Code grants the project clone's shared git directory
 # with it, so a sandboxed ship or scout works in its own task clone instead of a
@@ -2383,7 +2467,7 @@ fi
 TASK_CLONE=0
 if [ "$RELAUNCH" -eq 1 ]; then
   [ "${RELAUNCH_WT_LAYOUT:-}" != clone ] || TASK_CLONE=1
-elif [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ] && [ "$BACKEND" != orca ]; then
+elif { [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ] || [ "$CONTAINER_ACTIVE" = 1 ]; } && [ "$BACKEND" != orca ]; then
   TASK_CLONE=1
 fi
 if [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ] && [ "$TASK_CLONE" != 1 ]; then
@@ -2524,6 +2608,12 @@ WORKER_ACCOUNT_DECLARED=${WORKER_ACCOUNT%%$'\t'*}
 WORKER_ACCOUNT_ROOT=${WORKER_ACCOUNT#*$'\t'}
 WORKER_ACCOUNT_PROVIDER=${WORKER_ACCOUNT_ROOT#*$'\t'}
 WORKER_ACCOUNT_ROOT=${WORKER_ACCOUNT_ROOT%%$'\t'*}
+# A contained worker logs in with config/container-claude-token, never a host
+# account root, so a pin would record an account the worker does not use.
+if [ "$CONTAINER_ACTIVE" = 1 ] && [ -n "$WORKER_ACCOUNT" ]; then
+  echo "error: $ID cannot launch: $CONTAINER_PROJECT selects the container runtime, whose worker logs in with $(fm_container_token_path "$CONFIG"), while config/claude-account pins a host Claude account; the captain removes one of the two" >&2
+  exit 1
+fi
 if [ -n "$WORKER_ACCOUNT" ] && [ "$HARNESS" = claude ]; then
   if [ -n "$WORKER_ACCOUNT_ROOT" ]; then
     export CLAUDE_CONFIG_DIR=$WORKER_ACCOUNT_ROOT
@@ -3379,6 +3469,8 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
       fi &&
       if [ "$KIND" = scout ] && [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
         fm_brief_sandbox_scout_overlay "$DATA" "$ID"
+      elif [ "$KIND" = scout ] && [ "$CONTAINER_ACTIVE" = 1 ]; then
+        fm_brief_sandbox_scout_overlay "$DATA" "$ID" container
       fi
   } >"$BRIEF_TMP" || {
     rm -f -- "$BRIEF_TMP"
@@ -3498,6 +3590,10 @@ fi
 # Like the Gerrit refusal above, for a ship or a scout: a --herdr-lab brief
 # (bin/fm-brief.sh) has its worker drive Herdr and tmux lab sessions through
 # their Unix sockets, and the Claude sandbox refuses every socket connect.
+if [ "$CONTAINER_ACTIVE" = 1 ] && grep -qxF '# Herdr isolation - HARD SAFETY CONTRACT' "$SOURCE_BRIEF"; then
+  echo "error: $ID cannot launch in the container runtime: $SOURCE_BRIEF was scaffolded with --herdr-lab, whose worker must itself drive Herdr and tmux lab sessions through their Unix sockets, which the container never mounts" >&2
+  exit 1
+fi
 if [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ] && grep -qxF '# Herdr isolation - HARD SAFETY CONTRACT' "$SOURCE_BRIEF"; then
   echo "error: $ID cannot launch in the Claude sandbox: $SOURCE_BRIEF was scaffolded with --herdr-lab, whose worker must itself drive Herdr and tmux lab sessions through their Unix sockets, and config/claude-sandbox=on refuses every socket connect; spawn it with a non-Claude harness, or write off to config/claude-sandbox" >&2
   exit 1
@@ -4702,6 +4798,31 @@ spawn_assert_agent_worktree
 # it has done so. agy is crewmate/scout only (refused above for secondmate), so
 # only the worktree shape applies.
 AGY_TRUST_PREREGISTERED=0
+# Container runtime (bin/fm-container-lib.sh): the host-only directory beside
+# the clone holds the home mounted inside (HOME and CLAUDE_CONFIG_DIR) and the
+# hook event file. Claude inside starts from that empty config, so a fresh
+# spawn marks it as past first-run onboarding, and the trust registration below
+# writes that store rather than the captain's own. Once a container has run,
+# its home is the worker's, which could have replaced any entry with a symlink
+# to a host file, so a relaunch never reads or writes inside it; the store
+# keeps the trust and onboarding the first launch recorded.
+CONTAINER_DIR=
+CONTAINER_CLAUDE_DIR=
+if [ "$CONTAINER_ACTIVE" = 1 ]; then
+  CONTAINER_DIR=$(fm_container_dir "$(cd "$WT" && pwd -P)")
+  CONTAINER_CLAUDE_DIR="$CONTAINER_DIR/home/.claude"
+  if [ "$RELAUNCH" -eq 1 ]; then
+    if [ ! -d "$CONTAINER_DIR/home" ] || [ -L "$CONTAINER_DIR/home" ] || ! touch "$CONTAINER_DIR/events"; then
+      echo "error: task $ID's container home $CONTAINER_DIR/home is missing; refusing to relaunch its worker into an unprepared config" >&2
+      exit 1
+    fi
+  elif [ -e "$CONTAINER_DIR" ] || [ -L "$CONTAINER_DIR" ] ||
+    ! (umask 077 && mkdir -p "$CONTAINER_CLAUDE_DIR" && touch "$CONTAINER_DIR/events") ||
+    ! (umask 077 && jq -n '{hasCompletedOnboarding: true}' >"$CONTAINER_CLAUDE_DIR/.claude.json"); then
+    echo "error: could not prepare task $ID's container home under $CONTAINER_DIR; inspect window $T" >&2
+    exit 1
+  fi
+fi
 case "$HARNESS" in
 claude*)
   if [ "$KIND" = secondmate ]; then
@@ -4711,7 +4832,18 @@ claude*)
   else
     spawn_trust_args=("$WT" "$PROJ_ABS")
   fi
-  if ! "$FM_ROOT/bin/fm-claude-trust.sh" "${spawn_trust_args[@]}" >/dev/null; then
+  if [ "$CONTAINER_ACTIVE" = 1 ]; then
+    spawn_trust_ok=0
+    if [ "$RELAUNCH" -eq 1 ]; then
+      spawn_trust_ok=1
+    else
+      CLAUDE_CONFIG_DIR=$CONTAINER_CLAUDE_DIR "$FM_ROOT/bin/fm-claude-trust.sh" "${spawn_trust_args[@]}" >/dev/null && spawn_trust_ok=1
+    fi
+  else
+    spawn_trust_ok=0
+    "$FM_ROOT/bin/fm-claude-trust.sh" "${spawn_trust_args[@]}" >/dev/null && spawn_trust_ok=1
+  fi
+  if [ "$spawn_trust_ok" != 1 ]; then
     echo "error: could not pre-register Claude workspace trust for $WT; refusing to launch a claude worker that would wedge on the trust dialog; inspect window $T" >&2
     exit 1
   fi
@@ -4837,13 +4969,24 @@ if [ "$KIND" != secondmate ]; then
     # the turn-ended NOTIFICATION touch for the watcher. Every
     # hook command tolerates a refused event (|| true) so a stale-gen writer
     # can never break Claude's own lifecycle.
+    # In the container runtime these hooks run inside the container, where
+    # neither this home's state/ nor fm-busy-event.sh exists, so each one
+    # appends its event to the task's event file and the host runner applies
+    # it with the gen minted above (fm_container_relay_event).
     mkdir -p "$WT/.claude"
-    busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
-    busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source claude-hook"
-    j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submit 2>/dev/null || true")
-    j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
-    j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
-    j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
+    if [ "$CONTAINER_ACTIVE" = 1 ]; then
+      j_submit=$(json_escape "$(fm_container_hook_command "$CONTAINER_DIR/events" busy user-prompt-submit)")
+      j_stop=$(json_escape "$(fm_container_hook_command "$CONTAINER_DIR/events" idle stop)")
+      j_stopfail=$(json_escape "$(fm_container_hook_command "$CONTAINER_DIR/events" idle stop-failure)")
+      j_sessionend=$(json_escape "$(fm_container_hook_command "$CONTAINER_DIR/events" idle session-end)")
+    else
+      busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
+      busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source claude-hook"
+      j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submit 2>/dev/null || true")
+      j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
+      j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
+      j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
+    fi
     cat >"$WT/.claude/settings.local.json" <<EOF
 {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
@@ -5230,7 +5373,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo branch tasktmp model effort account account_provider busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo branch tasktmp model effort account account_provider busy_gen spawn_gen traceparent backend runtime container herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -5264,6 +5407,12 @@ preserve_relaunch_meta() {
   # a relaunch keeps it through preserve_relaunch_meta.
   if [ "$RELAUNCH" -eq 0 ] && [ "$TASK_CLONE" = 1 ]; then
     echo "worktree_layout=clone"
+  fi
+  # Written only for a container launch (bin/fm-container-lib.sh), so every
+  # other record stays byte-identical; teardown removes the named container.
+  if [ "$CONTAINER_ACTIVE" = 1 ]; then
+    echo "runtime=container"
+    echo "container=$CONTAINER_NAME"
   fi
   if [ "$BACKEND" = herdr ]; then
     echo "herdr_session=$HERDR_SES"
@@ -5519,8 +5668,49 @@ if [ -n "$WORKER_ACCOUNT" ]; then
     LAUNCH="PI_CODING_AGENT_DIR=$(shell_quote "$WORKER_ACCOUNT_ROOT") $LAUNCH"
     ;;
   esac
-elif [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+elif [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CONTAINER_ACTIVE" != 1 ]; then
   LAUNCH="CLAUDE_CONFIG_DIR=$(shell_quote "$CLAUDE_CONFIG_DIR") $LAUNCH"
+fi
+# Container runtime (bin/fm-container-lib.sh): the pane runs the claude launch
+# inside the task's container through bin/fm-container-run.sh, which reads the
+# per-launch spec written here. Every path is the resolved host path, which is
+# also where the container mounts it.
+if [ "$CONTAINER_ACTIVE" = 1 ]; then
+  # shellcheck source=bin/fm-operational-input.sh
+  . "$SCRIPT_DIR/fm-operational-input.sh"
+  container_record=
+  fm_operational_doorbell_path "${brief_doorbell:-}" container_record || {
+    echo "error: could not resolve the launch-brief record for $ID's container" >&2
+    exit 1
+  }
+  if ! container_objects=$(git -C "$PROJ_ABS" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) ||
+    ! container_objects=$(cd "$container_objects/objects" 2>/dev/null && pwd -P); then
+    echo "error: could not resolve the object store $ID's task clone borrows from $PROJ_ABS" >&2
+    exit 1
+  fi
+  container_home_hash=$(fm_container_home_hash "$FM_HOME") || exit 1
+  container_data=$(cd "$DATA" && pwd -P)/$ID
+  container_config=$(cd "$CONFIG" && pwd -P)
+  if ! mkdir -p "$STATE_REAL/$ID.inbox/handled" "$container_data" || ! : >>"$STATE_REAL/$ID.status"; then
+    echo "error: could not create the task channels $ID's container mounts" >&2
+    exit 1
+  fi
+  fm_container_spec_write "$CONTAINER_DIR/spec" \
+    "id=$ID" "name=$CONTAINER_NAME" "home_hash=$container_home_hash" \
+    "image=$FM_CONTAINER_IMAGE" "pids_limit=$FM_CONTAINER_PIDS_LIMIT" "memory=$FM_CONTAINER_MEMORY" \
+    "cargo_volume=$(fm_container_cargo_volume "$CONTAINER_PROJECT")" \
+    "worktree=$(cd "$WT" && pwd -P)" "objects=$container_objects" \
+    "home=$CONTAINER_DIR/home" "events=$CONTAINER_DIR/events" "proxy_log=$CONTAINER_DIR/proxy.log" \
+    "status=$STATE_REAL/$ID.status" "inbox=$STATE_REAL/$ID.inbox" "data=$container_data" \
+    "record=$container_record" "skills=$(cd "$FM_ROOT" && pwd -P)/.agents/skills" \
+    "token=$(fm_container_token_path "$container_config")" \
+    "state=$STATE_REAL" "busy_gen=${BUSY_GEN:-}" "turnend=$TURNEND" \
+    "git_name=$(git -C "$WT" config user.name 2>/dev/null || true)" \
+    "git_email=$(git -C "$WT" config user.email 2>/dev/null || true)" || {
+    echo "error: could not write the container spec for $ID under $CONTAINER_DIR" >&2
+    exit 1
+  }
+  LAUNCH="$(shell_quote "$FM_ROOT/bin/fm-container-run.sh") $(shell_quote "$CONTAINER_DIR/spec") -- $LAUNCH"
 fi
 if [ "$KIND" = secondmate ]; then
   sq_home=$(shell_quote "$PROJ_ABS")
