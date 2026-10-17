@@ -12,9 +12,11 @@
 # selects the container runtime (docs/container-runtime.md). The script stays
 # on the host for the container's whole life and owns everything that must not
 # enter it:
-#   1. It re-executes itself under argv[0] fm-claude-container, so the
-#      backends' liveness probes read the pane as a live Claude agent for as
-#      long as the container runs and as agent-free once it exits.
+#   1. It re-executes itself under argv[0] fm-claude-container, so a pane
+#      process probe reads the pane as holding a harness rather than a bare
+#      shell while the runner lives. The contained claude itself is never in
+#      the pane's process tree: whether it runs is read from the container
+#      (fm_container_agent_state, "LIVENESS" in bin/fm-container-lib.sh).
 #   2. It reads the captain's token (config/container-claude-token) and writes
 #      it into a 0600 env file inside a private 0700 directory, which it
 #      removes on exit; the token never reaches a command line.

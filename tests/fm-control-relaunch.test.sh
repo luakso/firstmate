@@ -51,7 +51,8 @@ trap relaunch_cleanup EXIT
 
 # The same lifecycle-modelling tmux stub as tests/fm-control.test.sh: the
 # harness's exit command stops the agent, and a launch-brief literal starts the
-# harness named in `becomes`.
+# harness named in `becomes`. A case that writes `container` also models a
+# container task's container, which the same two inputs stop and start.
 make_tmux_stub() {  # <dir>
   local fb="$1/fakebin"
   mkdir -p "$fb"
@@ -79,10 +80,12 @@ case "${1:-}" in
       case "$payload" in
         /exit|/quit)
           printf 'zsh' > "$D/command"
+          [ ! -f "$D/container" ] || printf 'absent' > "$D/container"
           [ -z "${FM_FAKE_EXIT_TRANSPORT_FAIL_AFTER_STOP:-}" ] || exit 1
           ;;
         *'encode launch-brief'* | *'Firstmate operational input waiting: read'*)
           cat "$D/becomes" > "$D/command"
+          [ ! -f "$D/container" ] || printf 'running' > "$D/container"
           [ -z "${FM_FAKE_LAUNCH_TRANSPORT_FAIL_AFTER_START:-}" ] || exit 1
           ;;
       esac
@@ -515,7 +518,26 @@ add_container_config() {  # <case-dir>
   printf 'image=localhost/test-image:1\n' > "$1/home/config/container/proj"
   printf 'sk-ant-oat01-relaunch-test\n' > "$1/home/config/container-claude-token"
   chmod 600 "$1/home/config/container-claude-token"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$1/fakebin/podman"
+  # The container the stub starts and stops: running holds claude, absent is
+  # no container at all. Its pane reads as a bare shell throughout, because the
+  # contained claude is never in the pane's process tree.
+  printf 'running' > "$1/fake/container"
+  printf 'zsh' > "$1/fake/command"
+  printf 'zsh' > "$1/fake/becomes"
+  cat > "$1/fakebin/podman" <<'SH'
+#!/usr/bin/env bash
+state=$(cat "$FM_FAKE_DIR/container" 2>/dev/null)
+case "${1:-} ${2:-}" in
+  'container inspect')
+    [ "$state" = running ] || { echo 'Error: no such container' >&2; exit 125; }
+    echo running ;;
+  'container exists') [ "$state" = running ] || exit 1 ;;
+  top\ *)
+    [ "$state" = running ] || exit 125
+    printf 'COMMAND COMMAND\ntini /usr/bin/tini -- /bin/sh -c exec claude\nclaude claude --permission-mode auto\n' ;;
+esac
+exit 0
+SH
   chmod +x "$1/fakebin/podman"
 }
 
@@ -554,6 +576,44 @@ test_container_relaunch_keeps_the_task_in_its_container() {
   [ "$rc" -ne 0 ] || fail "a task spawned outside the container relaunched after its project opted in"$'\n'"$out"
   assert_contains "$out" "was spawned outside it" "the refusal does not say the task predates the opt-in"
   pass "fm-control relaunch: a container task relaunches only into its container"
+}
+
+# A container task's agent lives in its container, outside the pane's process
+# tree, so the pane alone reads as a bare shell. Its liveness comes from the
+# recorded container (bin/fm-container-lib.sh "LIVENESS"): interrupt and exit
+# reach the contained claude through the same pane while the container runs
+# it, and refuse or report it stopped once the container is gone. The same
+# record without runtime=container keeps the pane's own verdict.
+test_container_task_liveness_comes_from_its_container() {
+  local dir id out rc
+  id=rl-container-live
+  dir=$(new_case container-live "$id")
+  add_clone_ship_task "$dir" "$id" claude
+  sed -i.bak 's/^mode=.*/mode=local-only/' "$dir/home/state/$id.meta" && rm -f "$dir/home/state/$id.meta.bak"
+  printf '%s\n' runtime=container "container=fm-$id-0123456789ab" >> "$dir/home/state/$id.meta"
+  add_container_config "$dir"
+
+  out=$(run_control "$dir" "$id" interrupt); rc=$?
+  expect_code 0 "$rc" "interrupt should reach a container task whose container runs claude"$'\n'"$out"
+  assert_contains "$out" "verified=agent-alive" "the interrupt did not prove the contained agent still runs"
+  assert_grep "Escape" "$dir/fake/keys" "the interrupt key did not reach the container task's pane"
+
+  out=$(run_control "$dir" "$id" exit); rc=$?
+  expect_code 0 "$rc" "exit should stop a container task's contained claude"$'\n'"$out"
+  assert_contains "$out" "stopped $id" "exit did not prove the contained agent stopped"
+  assert_grep "/exit" "$dir/fake/literal" "the exit command did not reach the container task's pane"
+  [ "$(cat "$dir/fake/container")" = absent ] || fail "the exit command did not end the container"
+
+  out=$(run_control "$dir" "$id" interrupt); rc=$?
+  [ "$rc" -ne 0 ] || fail "interrupt was sent to a container task whose container is gone"$'\n'"$out"
+  assert_contains "$out" "state: dead" "the refusal does not report the container task's agent as dead"
+
+  sed -i.bak '/^runtime=/d; /^container=/d' "$dir/home/state/$id.meta" && rm -f "$dir/home/state/$id.meta.bak"
+  printf 'running' > "$dir/fake/container"
+  out=$(run_control "$dir" "$id" interrupt); rc=$?
+  [ "$rc" -ne 0 ] || fail "a task outside the container runtime was judged by a container"$'\n'"$out"
+  assert_contains "$out" "state: dead" "a non-container task no longer reads its pane's own verdict"
+  pass "fm-control: a container task's agent is alive exactly while its container runs claude"
 }
 
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text() {
@@ -2556,6 +2616,7 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_sandboxed_relaunch_drops_committed_project_settings
 test_sandboxed_relaunch_refuses_a_linked_worktree
 test_container_relaunch_keeps_the_task_in_its_container
+test_container_task_liveness_comes_from_its_container
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text
 test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven
 test_relaunch_from_linked_home_preserves_recorded_worktree

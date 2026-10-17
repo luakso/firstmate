@@ -985,14 +985,51 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
 # `missing` only in this recovery-grade view. Zellij remains unverified because
 # its secondmate ghost-tab and agent-process recovery path has not been
 # empirically validated. Orca and cmux do not support secondmate spawns.
+# A container-runtime task's agent runs outside every pane process tree, so its
+# tmux or herdr verdict is passed through fm_backend_container_agent_overlay.
 fm_backend_agent_state() {  # <backend> <target>
   local backend=$1 target=$2
   fm_backend_source "$backend" || { printf 'unverified'; return 0; }
   case "$backend" in
-    tmux) fm_backend_tmux_agent_state "$target" ;;
-    herdr) fm_backend_herdr_agent_state "$target" ;;
+    tmux) fm_backend_container_agent_overlay "$target" "$(fm_backend_tmux_agent_state "$target")" ;;
+    herdr) fm_backend_container_agent_overlay "$target" "$(fm_backend_herdr_agent_state "$target")" ;;
     *) printf 'unverified' ;;
   esac
+}
+
+# fm_backend_container_of_target: the recorded container name of the
+# container-runtime task (runtime=container, bin/fm-container-lib.sh) whose
+# record in this home's state directory - STATE, else FM_STATE_OVERRIDE, else
+# FM_HOME/state, the directory every caller resolves - binds <target>. Prints
+# the name, which is empty for a record that lost it, and fails when no such
+# record binds the target, which is every non-container task.
+fm_backend_container_of_target() {  # <target>
+  local target=$1 state meta
+  state=${STATE:-${FM_STATE_OVERRIDE:-${FM_HOME:+$FM_HOME/state}}}
+  [ -n "$target" ] && [ -n "$state" ] && [ -d "$state" ] || return 1
+  while IFS= read -r meta; do
+    [ -n "$meta" ] || continue
+    [ "$(fm_backend_target_of_meta "$meta")" = "$target" ] || continue
+    fm_meta_get "$meta" container
+    return 0
+  done <<EOF
+$(grep -lx 'runtime=container' "$state"/*.meta 2>/dev/null)
+EOF
+  return 1
+}
+
+# fm_backend_container_agent_overlay: print <endpoint-state> unchanged for a
+# target no container task binds; for a container task, the verdict
+# fm_container_agent_state derives from its recorded container and that
+# endpoint read.
+fm_backend_container_agent_overlay() {  # <target> <endpoint-state>
+  local name
+  name=$(fm_backend_container_of_target "$1") || { printf '%s' "$2"; return 0; }
+  command -v fm_container_agent_state >/dev/null 2>&1 || {
+    # shellcheck source=bin/fm-container-lib.sh
+    . "$FM_BACKEND_LIB_DIR/fm-container-lib.sh"
+  }
+  fm_container_agent_state "$name" "$2"
 }
 
 # Backward-compatible three-state view for existing callers. An

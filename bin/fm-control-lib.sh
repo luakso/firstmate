@@ -352,8 +352,9 @@ fm_control_endpoint_absence_verdict() {  # <backend> <target>
     herdr)
       # Start the RECORDED session's server (only the server - nothing is
       # created) and re-read the recorded pane. A pane that comes back with the
-      # server was never destroyed.
-      case "$(fm_backend_herdr_endpoint_absence_recheck "$target")" in
+      # server was never destroyed. A container task's re-read is judged by its
+      # container too, exactly as fm_backend_agent_state judges it.
+      case "$(fm_backend_container_agent_overlay "$target" "$(fm_backend_herdr_endpoint_absence_recheck "$target")")" in
         dead) printf 'dead\t' ;;
         alive) printf 'alive\t' ;;
         missing) printf 'gone\t' ;;
