@@ -598,9 +598,12 @@ test_container_relaunch_reads_its_clone_as_data() {
   # shellcheck disable=SC2016  # $0 belongs to the sentinel script
   printf '#!/bin/sh\nprintf "%%s\\n" "$0" >> %s\ncat\n' "'$exec_log'" > "$dir/clone-fsmonitor"
   chmod +x "$dir/clone-fsmonitor"
+  # A worktree git would take from this config proves no git on the host reads it.
+  mkdir -p "$dir/elsewhere"
   cat >> "$ADDED_CLONE/.git/config" <<EOF
 [core]
 	fsmonitor = $dir/clone-fsmonitor
+	worktree = $dir/elsewhere
 [user]
 	name = Worker Chosen
 EOF

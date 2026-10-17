@@ -3725,6 +3725,20 @@ validate_spawn_worktree() { # <source> <inspect-target>
   fi
 }
 
+# The recorded worktree a relaunch reuses. A contained worker can rewrite
+# anything under its clone's .git, so its clone is checked from its files
+# (bin/fm-task-clone-lib.sh "CONTAINED CLONES") rather than by running git in it.
+validate_relaunch_worktree() { # <inspect-target>
+  if [ "$CONTAINER_ACTIVE" != 1 ]; then
+    validate_spawn_worktree "relaunch" "$1"
+    return
+  fi
+  if ! fm_task_clone_shaped "$WT" container || [ "$(real_path_or_raw "$WT")" = "$PROJ_ABS_REAL" ]; then
+    echo "error: relaunch did not find task $ID's own task clone at '$WT' (spawning project '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $1" >&2
+    exit 1
+  fi
+}
+
 # A pooled slot whose only deviation is a submodule gitlink is stale, not dirty:
 # an earlier refresh moved the superproject and left the submodule checkout on
 # the pin the previous base recorded. The refusal still stands and this gate
@@ -4655,7 +4669,7 @@ agy_spawn_fail() {  # <detail>
 }
 
 if [ "$RELAUNCH" -eq 1 ] && [ "$BACKEND" = orca ]; then
-  [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
+  [ "$KIND" = secondmate ] || validate_relaunch_worktree "$T"
 elif [ "$RELAUNCH" -eq 1 ]; then
   # No worktree is acquired: the recorded one is reused as-is. What must be
   # proven instead is that the adopted endpoint's shell is actually sitting in
@@ -4688,7 +4702,7 @@ elif [ "$RELAUNCH" -eq 1 ]; then
       exit 1
     fi
   fi
-  [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
+  [ "$KIND" = secondmate ] || validate_relaunch_worktree "$T"
 elif [ "$TASK_CLONE" = 1 ]; then
   # The clone is made here rather than by the pane, so no treehouse subshell or
   # cwd poll is involved; the explicit enter below moves the pane into it.
