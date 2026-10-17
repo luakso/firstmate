@@ -176,6 +176,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-worker-account-lib.sh
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
+# shellcheck source=bin/fm-task-clone-lib.sh
+. "$SCRIPT_DIR/fm-task-clone-lib.sh"
 
 POLL=${FM_CONTROL_POLL:-0.5}
 SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
@@ -871,6 +873,10 @@ safe_checkpoint() {
   [ -n "$WT" ] || die "task $ID has no recorded worktree; refusing to relaunch without a recorded local copy to preserve"
   [ -d "$WT" ] || die "task $ID's recorded worktree $WT is missing; refusing to relaunch and lose track of its work"
   wt_real=$(cd "$WT" 2>/dev/null && pwd -P) || die "task $ID's recorded worktree $WT cannot be resolved"
+  if [ "$(fm_task_clone_shape "$META")" = container ]; then
+    contained_checkpoint "$wt_real"
+    return
+  fi
   wt_top=$(git -C "$WT" rev-parse --show-toplevel 2>/dev/null) \
     || die "task $ID's recorded worktree $WT is not a git worktree; refusing to relaunch without a checkout whose unlanded work can be accounted for"
   wt_top_real=$(cd "$wt_top" 2>/dev/null && pwd -P) || wt_top_real=$wt_top
@@ -924,6 +930,34 @@ safe_checkpoint() {
     done
     CHECKPOINT_LINES+=("children=$children")
   fi
+}
+
+# A contained task's worker can rewrite anything under its clone's .git, so its
+# checkpoint reads the clone as data (bin/fm-task-clone-lib.sh "CONTAINED
+# CLONES"): its shape from files, HEAD from its HEAD and ref files, and its
+# status from a private snapshot.
+contained_checkpoint() {  # <clone-real-path>
+  local clone=$1 head_ref head status_output dirty
+  fm_task_clone_shaped "$clone" container \
+    || die "task $ID's recorded worktree $WT is not its task clone; refusing to relaunch against an ambiguous checkout"
+  head_ref=$(fm_task_clone_head_data "$clone/.git") \
+    || die "task $ID's worktree HEAD cannot be inspected; refusing to relaunch from an unreadable checkout"
+  case "$head_ref" in
+    refs/heads/*)
+      if ! head=$(fm_task_clone_ref_data "$clone/.git" "$head_ref"); then
+        if [ -e "$clone/.git/$head_ref" ] || [ -L "$clone/.git/$head_ref" ] ||
+          grep -qF " $head_ref" "$clone/.git/packed-refs" 2>/dev/null; then
+          die "task $ID's worktree HEAD exists but cannot be resolved; refusing to relaunch from an unreadable checkout"
+        fi
+        head=unborn
+      fi ;;
+    *) head=$head_ref ;;
+  esac
+  status_output=$(fm_task_clone_status_once "$clone" "$(fm_meta_get "$META" project)" --porcelain 2>/dev/null) \
+    || die "task $ID's worktree status cannot be inspected; refusing to relaunch without accounting for local changes"
+  dirty=no
+  [ -z "$status_output" ] || dirty=yes
+  CHECKPOINT_LINES+=("worktree_head=$head" "worktree_dirty=$dirty")
 }
 
 # record_note: put the required progress note somewhere durable, and - for a

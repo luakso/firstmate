@@ -965,7 +965,7 @@ With a project file present, a spawn of that project also refuses, before anythi
 
 - the harness is not `claude`, or the launch is a raw command;
 - the backend is `orca`, whose linked worktree the container cannot use;
-- a ship's delivery mode is not `local-only`, because a contained worker has no forge credentials and no no-mistakes daemon;
+- a ship's delivery mode is `no-mistakes`, whose pipeline would run its agents and the project's code on the host, or the project's forge is Gerrit, because a contained ship ships only `local-only` or `direct-PR` through [host-side delivery](container-runtime.md#host-side-delivery) of GitHub pull requests;
 - [`config/claude-permission-mode`](#claude-permission-mode-configclaude-permission-mode) is not `auto`, because the container's fresh Claude config would park bypass mode on its confirmation dialog;
 - a [worker account pin](#worker-account-pin-configclaude-account-configpi-account) is declared, because a contained worker logs in with the token file instead;
 - the brief was scaffolded with `--herdr-lab`, whose worker needs Herdr and tmux sockets the container never mounts;

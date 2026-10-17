@@ -458,8 +458,19 @@ DESCENDANT_TASK_IDS=()
 DESCENDANT_TASK_KINDS=()
 DESCENDANT_TASK_HOMES=()
 DESCENDANT_TREEHOUSE_LOCK_PATHS=()
+# The private snapshot of a contained task's clone (open_contained_snapshot)
+# lives only for one round of safety checks, or until exit.
+TEARDOWN_SNAPSHOT_DIR=
+close_contained_snapshot() {
+  [ -n "${TEARDOWN_SNAPSHOT_DIR:-}" ] || return 0
+  chmod -R u+w -- "$TEARDOWN_SNAPSHOT_DIR" 2>/dev/null || true
+  rm -rf -- "$TEARDOWN_SNAPSHOT_DIR"
+  TEARDOWN_SNAPSHOT_DIR=
+}
+
 teardown_release_locks() {
   local status=$? i
+  close_contained_snapshot
   if declare -F teardown_release_herdr_locks >/dev/null 2>&1; then
     teardown_release_herdr_locks || true
   fi
@@ -1171,6 +1182,12 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ] &&
   [ "$(fm_meta_get "$META" worktree_layout)" = clone ]; then
   TASK_CLONE=1
 fi
+# A contained task's worker can rewrite anything under its clone's .git, so
+# teardown reads that clone only as data (bin/fm-task-clone-lib.sh "CONTAINED
+# CLONES"): its ownership from files, and its landed-work checks in a private
+# snapshot (open_contained_snapshot).
+CLONE_SHAPE=
+[ "$KIND" = secondmate ] || CLONE_SHAPE=$(fm_task_clone_shape "$META")
 
 # A record accepted as a legacy incarnation (no spawn_gen, and either
 # --legacy-record given or the record is windowless) may be torn down only
@@ -1475,7 +1492,7 @@ remove_pr_poll_artifacts() {
 pr_number_from_branch() {
   local branch=$1 out n
   [ -n "$branch" ] && [ "$branch" != HEAD ] || return 1
-  out=$( cd "$WT" && gh-axi pr list --state all --head "$branch" --limit 1 2>/dev/null ) || return 1
+  out=$(wt_gh gh-axi pr list --state all --head "$branch" --limit 1 2>/dev/null) || return 1
   n=$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' | head -1)
   [ -n "$n" ] || return 1
   printf '%s' "$n"
@@ -1500,26 +1517,26 @@ pr_number_from_target() {
 
 ensure_commit_object() {
   local target=$1 commit=$2 n
-  git -C "$WT" cat-file -e "$commit^{commit}" 2>/dev/null && return 0
+  wt_git cat-file -e "$commit^{commit}" 2>/dev/null && return 0
   n=$(pr_number_from_target "$target") || return 1
-  git -C "$WT" remote get-url origin >/dev/null 2>&1 || return 1
-  git -C "$WT" fetch --quiet origin "refs/pull/$n/head" >/dev/null 2>&1 || return 1
-  git -C "$WT" cat-file -e "$commit^{commit}" 2>/dev/null
+  wt_git remote get-url origin >/dev/null 2>&1 || return 1
+  wt_fetch fetch --quiet origin "refs/pull/$n/head" >/dev/null 2>&1 || return 1
+  wt_git cat-file -e "$commit^{commit}" 2>/dev/null
 }
 
 patch_id_for_commit() {
   local commit=$1
-  git -C "$WT" show --pretty=medium --no-ext-diff "$commit" 2>/dev/null \
+  wt_git show --pretty=medium --no-ext-diff "$commit" 2>/dev/null \
     | git patch-id --stable 2>/dev/null \
     | awk 'NR == 1 { print $1 }'
 }
 
 unpushed_patches_are_in_pr_head() {
   local pr_head=$1 current base pr_patch_ids commit patch_id unpushed
-  current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
-  base=$(git -C "$WT" merge-base "$current" "$pr_head" 2>/dev/null) || return 1
+  current=$(wt_git rev-parse --verify HEAD 2>/dev/null) || return 1
+  base=$(wt_git merge-base "$current" "$pr_head" 2>/dev/null) || return 1
   pr_patch_ids=$(
-    git -C "$WT" log --format=%H "$base..$pr_head" -- 2>/dev/null \
+    wt_git log --format=%H "$base..$pr_head" -- 2>/dev/null \
       | while IFS= read -r commit; do
           patch_id_for_commit "$commit"
         done \
@@ -1527,7 +1544,7 @@ unpushed_patches_are_in_pr_head() {
       | sort -u
   ) || return 1
   [ -n "$pr_patch_ids" ] || return 1
-  unpushed=$(git -C "$WT" log --format=%H HEAD --not --remotes -- 2>/dev/null) || return 1
+  unpushed=$(wt_git log --format=%H HEAD --not --remotes -- 2>/dev/null) || return 1
   [ -n "$unpushed" ] || return 1
   while IFS= read -r commit; do
     [ -n "$commit" ] || continue
@@ -1552,7 +1569,7 @@ pr_is_merged() {
     target=$(pr_number_from_branch "$branch") || return 1
   fi
   [ -n "$target" ] || return 1
-  view=$(cd "$WT" && gh pr view "$target" --json state,headRefOid,url -q '.state + "\t" + .headRefOid + "\t" + .url' 2>/dev/null) || return 1
+  view=$(wt_gh gh pr view "$target" --json state,headRefOid,url -q '.state + "\t" + .headRefOid + "\t" + .url' 2>/dev/null) || return 1
   state=${view%%$'\t'*}
   remainder=${view#*$'\t'}
   [ "$state" != "$view" ] || return 1
@@ -1565,8 +1582,8 @@ pr_is_merged() {
   esac
   [ -n "$head" ] || return 1
   ensure_commit_object "$target" "$head" || return 1
-  current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
-  if git -C "$WT" merge-base --is-ancestor "$current" "$head" 2>/dev/null; then
+  current=$(wt_git rev-parse --verify HEAD 2>/dev/null) || return 1
+  if wt_git merge-base --is-ancestor "$current" "$head" 2>/dev/null; then
     landed=1
   elif unpushed_patches_are_in_pr_head "$head"; then
     landed=1
@@ -1589,17 +1606,17 @@ pr_is_merged() {
 content_in_default() {
   local name ref default_tree merged_tree
   name=$(default_branch) || return 1
-  if git -C "$WT" remote get-url origin >/dev/null 2>&1; then
-    git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
+  if wt_git remote get-url origin >/dev/null 2>&1; then
+    wt_fetch fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
     ref="refs/remotes/origin/$name"
-  elif git -C "$WT" rev-parse --quiet --verify "refs/heads/$name" >/dev/null 2>&1; then
+  elif wt_git rev-parse --quiet --verify "refs/heads/$name" >/dev/null 2>&1; then
     ref="refs/heads/$name"
   else
     return 1
   fi
-  default_tree=$(git -C "$WT" rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || return 1
+  default_tree=$(wt_git rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || return 1
   [ -n "$default_tree" ] || return 1
-  merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null) || return 1
+  merged_tree=$(wt_git merge-tree --write-tree "$ref" HEAD 2>/dev/null) || return 1
   merged_tree=$(printf '%s\n' "$merged_tree" | head -1)
   [ "$merged_tree" = "$default_tree" ]
 }
@@ -1753,6 +1770,11 @@ treehouse_return_is_index_lock_error() {
 worktree_git_lock_path() {
   local dir=$1 lock abs_dir
   [ -n "$dir" ] && [ -d "$dir" ] || return 1
+  if [ "$CLONE_SHAPE" = container ] && [ "$dir" = "$WT" ]; then
+    abs_dir=$(canonical_existing_dir "$dir") || return 1
+    printf '%s/.git/index.lock\n' "$abs_dir"
+    return 0
+  fi
   lock=$(git -C "$dir" rev-parse --git-path index.lock 2>/dev/null) || return 1
   [ -n "$lock" ] || return 1
   case "$lock" in
@@ -1878,15 +1900,94 @@ teardown_treehouse_return() {
   return 1
 }
 
+# git in the task's worker copy: for a contained task, the private snapshot of
+# its clone, where only wt_fetch reads the host's own config, for credentials.
+TEARDOWN_SLUG=
+wt_git() {
+  if [ -n "$TEARDOWN_SNAPSHOT_DIR" ]; then
+    fm_task_clone_snapshot_git "$@"
+  else
+    git -C "$WT" "$@"
+  fi
+}
+wt_fetch() {
+  if [ -n "$TEARDOWN_SNAPSHOT_DIR" ]; then
+    fm_task_clone_snapshot_remote_git "$@"
+  else
+    git -C "$WT" "$@"
+  fi
+}
+wt_status() {  # <status-args...>
+  if [ -n "$TEARDOWN_SNAPSHOT_DIR" ]; then
+    fm_task_clone_status "$WT" "$@"
+  else
+    git -C "$WT" status "$@"
+  fi
+}
+# A forge CLI asking about the task's PR: for a contained task, from the
+# snapshot's private directory and naming the project clone's own repository.
+wt_gh() {  # <command...>
+  if [ -n "$TEARDOWN_SNAPSHOT_DIR" ]; then
+    [ -n "$TEARDOWN_SLUG" ] || return 1
+    (cd "$TEARDOWN_SNAPSHOT_DIR" && "$@" --repo "$TEARDOWN_SLUG")
+  else
+    (cd "$WT" && "$@")
+  fi
+}
+
+# Snapshot a contained task's clone for one round of safety checks: its objects,
+# and its HEAD and branch read as data, in a private repository whose remotes
+# are the host-owned project clone's remote-tracking refs plus the
+# delivered_head= host delivery recorded as pushed, and whose origin is the
+# project clone's origin URL.
+open_contained_snapshot() {
+  local dir clone_git origin delivered branch
+  close_contained_snapshot
+  if ! dir=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/fm-teardown.XXXXXXXX"); then
+    echo "REFUSED: cannot create a private directory to read contained task $ID's clone." >&2
+    return 1
+  fi
+  TEARDOWN_SNAPSHOT_DIR=$dir
+  FM_TASK_CLONE_ERROR=
+  if ! fm_task_clone_shaped "$WT" container || ! clone_git="$(cd "$WT" && pwd -P)/.git" ||
+    ! fm_task_clone_snapshot "$clone_git" "$dir/repo.git" "$PROJ" ||
+    ! fm_task_clone_project_git "$PROJ" for-each-ref --format='update %(refname) %(objectname)' refs/remotes |
+      fm_task_clone_snapshot_git update-ref --stdin; then
+    echo "REFUSED: cannot read contained task $ID's clone $WT as data${FM_TASK_CLONE_ERROR:+: $FM_TASK_CLONE_ERROR}." >&2
+    echo "Inspect the clone, or get the captain's explicit OK to discard, then --force." >&2
+    close_contained_snapshot
+    return 1
+  fi
+  fm_task_clone_snapshot_head "$clone_git" || true
+  delivered=$(fm_meta_get "$META" delivered_head)
+  branch=$(fm_meta_get "$META" branch)
+  if fm_pr_head_valid "$delivered" && git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+    fm_task_clone_snapshot_git update-ref "refs/remotes/origin/$branch" "$delivered" 2>/dev/null || true
+  fi
+  TEARDOWN_SLUG=
+  if origin=$(fm_task_clone_project_git "$PROJ" config --get remote.origin.url 2>/dev/null); then
+    fm_task_clone_snapshot_git config remote.origin.url "$origin" || true
+    TEARDOWN_SLUG=$(fm_task_clone_github_slug "$origin") || TEARDOWN_SLUG=
+  fi
+}
+
 validate_worktree_teardown_safety() {
-  local dirty_raw dirty unpushed_raw unpushed DEFAULT DEFAULT_TIP unmerged_raw unmerged branch
+  local rc=0
   [ -d "$WT" ] || return 0
   [ "$FORCE" != "--force" ] || return 0
   case "$KIND" in
     secondmate|scout) return 0 ;;
   esac
+  [ "$CLONE_SHAPE" = container ] || { worktree_teardown_safety_checks; return; }
+  open_contained_snapshot || return 1
+  worktree_teardown_safety_checks || rc=$?
+  close_contained_snapshot
+  return "$rc"
+}
 
-  if ! dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null); then
+worktree_teardown_safety_checks() {
+  local dirty_raw dirty unpushed_raw unpushed DEFAULT DEFAULT_TIP unmerged_raw unmerged branch
+  if ! dirty_raw=$(wt_status --porcelain 2>/dev/null); then
     if worktree_safety_blocked_by_lock "uncommitted changes"; then
       return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"
     fi
@@ -1896,7 +1997,7 @@ validate_worktree_teardown_safety() {
   fi
   dirty=$(printf '%s\n' "$dirty_raw" | grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' | head -1 || true)
 
-  if ! unpushed_raw=$(git -C "$WT" log --oneline HEAD --not --remotes -- 2>/dev/null); then
+  if ! unpushed_raw=$(wt_git log --oneline HEAD --not --remotes -- 2>/dev/null); then
     if worktree_safety_blocked_by_lock "commits not on a remote"; then
       return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"
     fi
@@ -1915,7 +2016,7 @@ validate_worktree_teardown_safety() {
       echo "REFUSED: cannot resolve local $DEFAULT in $PROJ." >&2
       return 1
     }
-    if ! unmerged_raw=$(git -C "$WT" log --oneline HEAD --not "$DEFAULT_TIP" -- 2>/dev/null); then
+    if ! unmerged_raw=$(wt_git log --oneline HEAD --not "$DEFAULT_TIP" -- 2>/dev/null); then
       if worktree_safety_blocked_by_lock "commits not on $DEFAULT"; then
         return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"
       fi
@@ -1939,7 +2040,7 @@ validate_worktree_teardown_safety() {
   elif [ -n "$unpushed" ]; then
     branch=${TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY:-}
     if [ -z "$branch" ]; then
-      branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
+      branch=$(wt_git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
       TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY=$branch
     fi
     if ! work_is_landed "$branch"; then
@@ -2048,6 +2149,9 @@ task_status_is_run_not_found() {  # <status-error> <run-id>
 conclude_task_no_mistakes_run() {  # <worktree>
   local wt=$1 out run_id
   [ "$KIND" = ship ] || return 0
+  # A contained ship never runs no-mistakes (bin/fm-spawn.sh refuses it), and
+  # no tool runs in its clone.
+  [ "$CLONE_SHAPE" != container ] || return 0
   [ -d "$wt" ] || return 0
   command -v no-mistakes >/dev/null 2>&1 || return 0
   task_run_is_own_parked_run "$wt" || return 0
@@ -2483,7 +2587,7 @@ teardown_owns_worktree() {
 # is refused before anything is killed, inspected, or removed.
 require_owned_task_clone() {
   [ "$TASK_CLONE" = 1 ] && [ -n "$WT" ] && [ -e "$WT" ] || return 0
-  fm_task_clone_owned "$WT" "$ID" "$FM_HOME" && return 0
+  fm_task_clone_owned "$WT" "$ID" "$FM_HOME" "$CLONE_SHAPE" && return 0
   echo "REFUSED: task $ID's recorded worktree $WT is not the task clone this home made for it (no $FM_TASK_CLONE_MARKER naming $ID and this home beside it, or not a standalone repository); nothing was changed - not even with --force." >&2
   echo "Reconcile the record (bin/fm-crew-state.sh $ID) or inspect that directory, then re-run teardown." >&2
   return 1
@@ -3046,7 +3150,8 @@ validate_firstmate_home_children_removal() {
         require_orca_worktree_path_match "$child_orca_worktree_id" "$child_wt" || return 1
       fi
     elif [ "$(meta_value "$child_meta" worktree_layout)" = clone ]; then
-      if [ -n "$child_wt" ] && [ -e "$child_wt" ] && ! fm_task_clone_owned "$child_wt" "$child_id" "$home"; then
+      if [ -n "$child_wt" ] && [ -e "$child_wt" ] &&
+        ! fm_task_clone_owned "$child_wt" "$child_id" "$home" "$(fm_task_clone_shape "$child_meta")"; then
         echo "REFUSED: unsafe child task clone removal target $child_wt is not the task clone $home made for $child_id" >&2
         return 1
       fi
@@ -3294,7 +3399,7 @@ cleanup_firstmate_home_children() {
       fm_backend_remove_worktree "$child_backend" "$child_orca_worktree_id" || return 1
     elif [ "$(meta_value "$child_meta" worktree_layout)" = clone ]; then
       if [ -n "$child_wt" ] && [ -e "$child_wt" ]; then
-        fm_task_clone_remove "$child_wt" "$child_id" "$home" || return 1
+        fm_task_clone_remove "$child_wt" "$child_id" "$home" "$(fm_task_clone_shape "$child_meta")" || return 1
       fi
     elif [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
       # The same ownership determination as the parent's own slot: a child
@@ -3661,7 +3766,7 @@ elif [ "$TASK_CLONE" = 1 ]; then
         fi
       fi
     fi
-    fm_task_clone_remove "$WT" "$ID" "$FM_HOME" || {
+    fm_task_clone_remove "$WT" "$ID" "$FM_HOME" "$CLONE_SHAPE" || {
       echo "error: could not remove task clone $WT; teardown aborted" >&2
       exit 1
     }

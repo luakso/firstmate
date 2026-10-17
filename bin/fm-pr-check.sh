@@ -124,13 +124,21 @@ fi
 # recorded and otherwise diffs the local branch, which is the current content.
 # bin/fm-pr-merge.sh reads a GitLab head live at merge time for the same reason,
 # and treats a recorded value that disagrees as stale rather than authoritative.
+# A contained task's worker can rewrite its clone's git config, so for a task
+# whose record says runtime=container gh reads the head from a private empty
+# directory instead, naming the pull request by its URL.
 WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_HEAD=
 if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/dev/null 2>&1; then
-  if REMOTE_HEAD=$(cd "$WT" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) \
+  GH_DIR=$WT
+  if [ "$(grep '^runtime=' "$META" | tail -1 | cut -d= -f2- || true)" = container ]; then
+    GH_DIR=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/fm-pr-check.XXXXXXXX")
+  fi
+  if REMOTE_HEAD=$(cd "$GH_DIR" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) \
     && fm_pr_head_valid "$REMOTE_HEAD"; then
     PR_HEAD=$REMOTE_HEAD
   fi
+  [ "$GH_DIR" = "$WT" ] || rmdir -- "$GH_DIR"
 fi
 
 MODE=$(grep '^mode=' "$META" | tail -1 | cut -d= -f2- || true)

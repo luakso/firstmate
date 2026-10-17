@@ -20,7 +20,11 @@
 # The check tests that head, not whether some branch moved. In no-mistakes
 # mode the pre-validation `done: {summary}` is the pipeline handoff and is
 # not gated; only the later CI-ready `done: PR <url> checks green` is, or on a
-# Gerrit project the later `done: PR <change url> published for review`. The
+# Gerrit project the later `done: PR <change url> published for review`. A
+# contained task's done is judged from its task clone read as data
+# (fm_dod_accept_contained_done): a direct-PR ship's ready-branch done is the
+# host-delivery handoff, and its PR report passes only on the head host
+# delivery recorded. The
 # named head is the worker copy's HEAD, except that a done naming the task's
 # recorded pr= passes when the forge holds that head: a forge-reported
 # pr_head= in no-mistakes mode, or a recorded merge
@@ -265,6 +269,30 @@ Still read `captain-hold-lifecycle` for what counts as a captain question, then 
 EOF
   fi
   printf "Before reporting done, end \`%s/%s/report.md\` with a \`## Captain questions\` section that lists each such question with its options, or states that there are none; firstmate reads that section to hold them for the captain.\n" "$1" "$2"
+}
+
+# A direct-PR ship in the container runtime has no forge credentials and no
+# route to the forge, so it cannot push or open its PR. Its launch brief
+# replaces those steps of the direct-PR Definition of done with a ready-branch
+# handoff that bin/fm-container-deliver.sh, run by firstmate on the host,
+# verifies and publishes; that script's header owns the checks and the
+# evidence-file contract this section states to the worker.
+fm_brief_container_delivery_overlay() {  # <data-dir> <task-id> <branch>
+  local evidence="$1/$2/delivery-evidence.md" branch=$3
+  cat <<EOF
+
+# Delivery under the container runtime
+This ship runs inside its own container, which holds no forge credentials and has no route to the forge, so you cannot push or open a PR.
+This section supersedes the Definition of done's instructions to push your branch, open and read back a PR with \`gh-axi\`, and report \`done: PR {url}\`: firstmate delivers your branch from the host instead.
+Work and commit only on your branch \`$branch\`, built on the commit this copy started from; never rewrite history below that commit, and never change anything under \`.github/\`, because host delivery refuses such a branch.
+Run the project's own checks inside this container - its formatter check, linter, tests, and any dependency policy check it defines - on your final commit, and fix what they find: they are the validation this branch gets before review.
+Then write \`$evidence\`: its first line is \`head: <the full 40-character SHA of your HEAD>\`, followed by the exact commands you ran with their result lines (not full logs) and anything a reviewer should know.
+Host delivery puts that file in the PR body and refuses one that names a different head, so rewrite it after every new commit.
+Leave the tree clean, with no uncommitted or untracked changes, append \`done [at=<epoch>]: ready in branch $branch for host delivery\` to the status file, and stop.
+That \`done:\` is accepted only when this copy's HEAD is the tip of \`$branch\`.
+Firstmate then verifies the branch, pushes it, opens the PR, and watches its CI from the host; when CI fails, firstmate steers you with the failing checks and their failed-job logs, and you fix, commit, rewrite the evidence, and report ready again the same way.
+Commit nothing after a ready report unless firstmate asks.
+EOF
 }
 
 # A no-mistakes ship running inside the Claude sandbox reaches the daemon only
@@ -704,6 +732,10 @@ fm_dod_accept_ship_done() {  # <kind> <mode> <worktree> <project> <line> [<state
     printf '%s\n' "named head cannot be verified: worktree missing"
     return 1
   fi
+  if [ -n "$meta" ] && [ "$(fm_dod_meta_value "$meta" runtime)" = container ]; then
+    fm_dod_accept_contained_done "$mode" "$wt" "$project" "$meta" "$url"
+    return
+  fi
   if ! git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then
     printf '%s\n' "named head cannot be verified: worktree is not a git copy"
     return 1
@@ -733,5 +765,54 @@ fm_dod_accept_ship_done() {  # <kind> <mode> <worktree> <project> <line> [<state
     return 0
   fi
   printf '%s\n' "named head $sha is unreachable outside the worker copy"
+  return 1
+}
+
+# The gate for a task whose record says runtime=container. Its worker can
+# rewrite anything under its clone's .git, so git never runs there: the clone
+# must be task-clone shaped as data, and its named head is its HEAD read as data
+# (bin/fm-task-clone-lib.sh "CONTAINED CLONES"). That worker cannot reach the
+# forge (bin/fm-container-deliver.sh publishes a direct-PR branch from the
+# host), so a direct-PR done: that reports no PR is its ready-branch handoff,
+# accepted while HEAD is the task's recorded branch, and the PR report the
+# delivery appends passes only while HEAD is the delivered_head= the delivery
+# wrote into the host-owned task record after its push. A local-only done:
+# passes while HEAD is on a branch of the clone, whose heads stand in for the
+# project's until bin/fm-merge-local.sh imports them, or when the host-owned
+# project clone already holds it. A contained ship ships in no other mode.
+# Same contract as fm_dod_accept_ship_done.
+fm_dod_accept_contained_done() {  # <mode> <worktree> <project> <meta> <url>
+  local mode=$1 wt=$2 project=$3 meta=$4 url=$5 git_dir head sha delivered
+  if ! fm_task_clone_shaped "$wt" container; then
+    printf '%s\n' "named head cannot be verified: worktree is not its task clone"
+    return 1
+  fi
+  git_dir="$(cd "$wt" && pwd -P)/.git"
+  if ! head=$(fm_task_clone_head_data "$git_dir") || ! sha=$(fm_task_clone_head_sha "$git_dir"); then
+    printf '%s\n' "named head could not be resolved"
+    return 1
+  fi
+  case "$mode" in
+    direct-PR)
+      if [ -n "$url" ]; then
+        delivered=$(fm_dod_meta_value "$meta" delivered_head)
+        if fm_pr_head_valid "$delivered" && [ "$sha" = "$delivered" ]; then
+          return 0
+        fi
+        printf '%s\n' "named head $sha is not the head host delivery pushed (delivered_head=${delivered:-none} in the task record)"
+        return 1
+      fi
+      [ "$head" = "refs/heads/$(fm_dod_meta_value "$meta" branch)" ] && return 0
+      printf '%s\n' "named head $sha is not the tip of the task's recorded branch in its task clone, so it is not ready for host delivery"
+      return 1 ;;
+    local-only)
+      case "$head" in refs/heads/*) return 0 ;; esac
+      if fm_dod_ref_contains "$project" refs/remotes "$sha" || fm_dod_ref_contains "$project" refs/heads "$sha"; then
+        return 0
+      fi
+      printf '%s\n' "named head $sha is unreachable outside the worker copy"
+      return 1 ;;
+  esac
+  printf '%s\n' "a contained ship delivers only in direct-PR or local-only mode, not ${mode:-no-mistakes}"
   return 1
 }

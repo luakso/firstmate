@@ -98,6 +98,9 @@ FLEET="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-task-clone-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-task-clone-lib.sh"
 # shellcheck source=bin/fm-landed-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-landed-lib.sh"  # FM_LANDED_JQ_DEFS: the shared landed selector
@@ -276,14 +279,22 @@ if [ "$INCLUDE_PRS" = 1 ]; then
     done <<EOF
 $(printf '%s' "$SNAP" | jq -r '.tasks[].pr.url // empty')
 EOF
-    while IFS= read -r wt; do
+    # A contained task's worker can rewrite its clone's git config, so its
+    # repository is its host-owned project clone's origin
+    # (bin/fm-task-clone-lib.sh "CONTAINED CLONES").
+    while IFS=$'\t' read -r wt meta project; do
       [ -n "$wt" ] || continue
       [ -d "$wt" ] || continue
-      u=$(git -C "$wt" remote get-url origin 2>/dev/null) || continue
+      if [ -n "$meta" ] && [ "$(fm_task_clone_shape "$meta")" = container ]; then
+        [ -n "$project" ] && [ -d "$project" ] || continue
+        u=$(fm_task_clone_project_git "$project" remote get-url origin 2>/dev/null) || continue
+      else
+        u=$(git -C "$wt" remote get-url origin 2>/dev/null) || continue
+      fi
       s=$(repo_slug "$u"); [ -n "$s" ] || continue
       case " $repos " in *" $s "*) : ;; *) repos="$repos $s" ;; esac
     done <<EOF
-$(printf '%s' "$SNAP" | jq -r '.tasks[] | select(.kind != "secondmate") | .paths.worktree.path // empty')
+$(printf '%s' "$SNAP" | jq -r '.tasks[] | select(.kind != "secondmate") | select(.paths.worktree.path != null) | [.paths.worktree.path, (.paths.meta.path // ""), (.project // "")] | @tsv')
 EOF
 
     for repo in $repos; do PR_REPOS_TOTAL=$((PR_REPOS_TOTAL + 1)); done
