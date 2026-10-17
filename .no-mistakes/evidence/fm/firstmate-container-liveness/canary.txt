@@ -1,0 +1,16 @@
+COMMAND     COMMAND
+tini        /usr/bin/tini -- /bin/sh -c socat TCP-LISTEN:3128,bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:/run/fm-proxy.s
+claude      claude --permission-mode auto --add-dir /home/picasso/Projects/firstmate/state/operational-inbox --add-dir /
+socat       socat TCP-LISTEN:3128,bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:/run/fm-proxy.sock 
+process_state=alive
+agent_state(endpoint=alive)=alive
+agent_state(endpoint=missing)=ambiguous
+agent_state(endpoint=dead)=alive
+agent_state(endpoint=unreadable)=unreadable
+TZ in container: UTC  host: +08
+tools:
+cargo-nextest: MISSING
+cargo-machete: MISSING
+lefthook: MISSING
+gitleaks: MISSING
+cargo-deny: /usr/local/bin/cargo-deny

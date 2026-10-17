@@ -1,0 +1,5 @@
+no container: dead / agent(endpoint alive)=ambiguous / endpoint missing=missing
+Error: unable to look up requested container: no container with name or ID "fm-live-probe-abc123" found: no such container
+claude-in-container: dead / endpoint=alive -> ambiguous / endpoint=missing -> missing
+no harness proc: ambiguous -> ambiguous
+removed: ambiguous ; endpoint dead -> dead
