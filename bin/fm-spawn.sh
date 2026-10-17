@@ -381,11 +381,17 @@
 #   in the captain's store. The task record gains runtime=container and the
 #   container's name, which teardown removes. Before any endpoint, worktree, or
 #   record exists, the spawn refuses a malformed project file, a harness other
-#   than claude or a raw command, backend=orca, a ship whose mode is not
-#   local-only, a permission mode other than auto, a worker account pin, a
-#   --herdr-lab brief, missing podman or node, and a missing or shared
-#   config/container-claude-token. A relaunch keeps a task in the runtime it was
-#   spawned in and refuses when the project file no longer agrees.
+#   than claude or a raw command, backend=orca, a ship whose mode is
+#   no-mistakes (its pipeline would run agents and project code on the host),
+#   a ship of a forge=gerrit project, a permission mode other than
+#   auto, a worker account pin, a --herdr-lab brief, missing podman or node,
+#   and a missing or shared config/container-claude-token. A contained
+#   direct-PR ship cannot reach the forge, so its launch brief has it stop at a
+#   ready branch (fm_brief_container_delivery_overlay) and its record gains
+#   clone_base=, the commit its clone started from, which
+#   bin/fm-container-deliver.sh checks before it publishes the branch from the
+#   host. A relaunch keeps a task in the runtime it was spawned in and refuses
+#   when the project file no longer agrees.
 # Worker account pin (config/claude-account, config/pi-account):
 #   Opt-in. With no file, a Claude or Pi launch is unchanged: Claude still
 #   receives this process's own CLAUDE_CONFIG_DIR when it is set, and Pi the
@@ -2432,8 +2438,10 @@ if [ "$CONTAINER_ACTIVE" = 1 ]; then
     container_refusal="the container runtime runs only the claude harness, and this launch is ${HARNESS:-a raw command}; spawn it with --harness claude"
   elif [ "$BACKEND" = orca ]; then
     container_refusal="backend=orca provides its own linked worktree, which the container cannot use; spawn it on another backend"
-  elif [ "$KIND" = ship ] && [ "$MODE" != local-only ]; then
-    container_refusal="a contained worker has no forge credentials and no no-mistakes daemon, so it can only ship mode=local-only, not mode=$MODE"
+  elif [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
+    container_refusal="it cannot ship mode=no-mistakes: the no-mistakes pipeline runs its review, test, lint, PR, and CI-fix agents and its commands on the host, where they would run this project's code and read the captain's files (docs/container-runtime.md \"Supported limits\"); ship it mode=direct-PR, which bin/fm-container-deliver.sh delivers from the host, or mode=local-only"
+  elif [ "$KIND" = ship ] && [ "$MODE" != local-only ] && [ "$MODE" != direct-PR ]; then
+    container_refusal="a contained ship can only ship mode=direct-PR or mode=local-only, not mode=$MODE"
   elif [ "$CLAUDE_PERMISSION_MODE" != auto ]; then
     container_refusal="the container's fresh Claude config would park bypass mode on its confirmation dialog, so config/claude-permission-mode must be auto"
   elif [ "$RELAUNCH" -eq 1 ] && [ "${RELAUNCH_WT_LAYOUT:-}" != clone ]; then
@@ -3467,6 +3475,9 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
       if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
         fm_brief_intent_overlay "$CAPTAIN_INTENT" "$CLAUDE_SANDBOX_ACTIVE"
       fi &&
+      if [ "$KIND" = ship ] && [ "$MODE" = direct-PR ] && [ "$CONTAINER_ACTIVE" = 1 ]; then
+        fm_brief_container_delivery_overlay "$DATA" "$ID" "$BRANCH"
+      fi &&
       if [ "$KIND" = scout ] && [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
         fm_brief_sandbox_scout_overlay "$DATA" "$ID"
       elif [ "$KIND" = scout ] && [ "$CONTAINER_ACTIVE" = 1 ]; then
@@ -3566,6 +3577,13 @@ if [ "$KIND" = ship ]; then
   # the git credentials, so the worker could never publish.
   if [ "$STANDING_FORGE" = gerrit ] && [ "$CLAUDE_SANDBOX_ACTIVE" = 1 ]; then
     echo "error: $ID cannot launch in the Claude sandbox: $PROJ_NAME is registered forge=gerrit, whose worker must itself run git fetch and gerrit-axi publish, and config/claude-sandbox=on fences both away from the Gerrit host and the git credentials; spawn it with a non-Claude harness, or write off to config/claude-sandbox" >&2
+    exit 1
+  fi
+  # A contained ship never reaches the forge itself, and the host-side delivery
+  # (bin/fm-container-deliver.sh) opens a GitHub pull request, not a Gerrit
+  # change.
+  if [ "$STANDING_FORGE" = gerrit ] && [ "$CONTAINER_ACTIVE" = 1 ]; then
+    echo "error: $ID cannot launch in the container runtime: $PROJ_NAME is registered forge=gerrit, and a contained ship's host-side delivery opens a GitHub pull request, not a Gerrit change" >&2
     exit 1
   fi
   # The registry holds the captain's standing posture, so dropping below it is
@@ -4679,6 +4697,14 @@ elif [ "$TASK_CLONE" = 1 ]; then
     exit 1
   }
   SPAWN_TASK_CLONE_CREATED=1
+  # The commit a contained ship's clone starts from: host delivery publishes
+  # only a branch that descends from it (bin/fm-container-deliver.sh).
+  if [ "$CONTAINER_ACTIVE" = 1 ] && [ "$KIND" = ship ]; then
+    CLONE_BASE=$(git -C "$WT" rev-parse --verify --quiet 'HEAD^{commit}') || {
+      echo "error: could not read the commit task $ID's clone $WT started from; inspect window $T" >&2
+      exit 1
+    }
+  fi
   validate_spawn_worktree "task clone" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   spawn_send_text_line "$WT_TARGET" 'treehouse get'
@@ -5430,6 +5456,9 @@ preserve_relaunch_meta() {
   if [ "$CONTAINER_ACTIVE" = 1 ]; then
     echo "runtime=container"
     echo "container=$CONTAINER_NAME"
+    # A fresh contained ship only; a relaunch keeps it through
+    # preserve_relaunch_meta.
+    [ -z "${CLONE_BASE:-}" ] || echo "clone_base=$CLONE_BASE"
   fi
   if [ "$BACKEND" = herdr ]; then
     echo "herdr_session=$HERDR_SES"

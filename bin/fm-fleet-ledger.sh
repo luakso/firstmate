@@ -11,6 +11,8 @@
 # Producers:
 #   bin/fm-brief.sh              appended (in every worker's status command,
 #                                right after its unchanged plain append)
+#   bin/fm-container-deliver.sh  appended (the host-delivery outcome it writes
+#                                to a contained ship's status)
 #   bin/fm-spawn.sh              dispatched (fresh spawns only, never relaunch)
 #   bin/fm-watch.sh              capture, once per poll cycle
 #   bin/fm-pr-check.sh           pr_ready (a PR registered for review, not the

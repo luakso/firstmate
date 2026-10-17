@@ -523,6 +523,42 @@ test_spawn_gives_a_container_scout_the_container_completion_overlay() {
   pass "a container scout hands its captain-question inventory to firstmate"
 }
 
+test_spawn_hands_a_contained_direct_pr_ship_to_host_delivery() {
+  local id=ctr-dpr-z6 out status clone brief base
+  make_spawn_world direct-pr proj-h
+  base=$(git -C "$S_PROJ" rev-parse HEAD)
+  out=$(run_container_spawn "$id" --mode direct-PR --yolo off)
+  status=$?
+  expect_code 0 "$status" "a contained direct-PR ship spawn should succeed"$'\n'"$out"
+  clone=$(cd "$FM_TASK_CLONE_ROOT/$id/proj-h" && pwd -P) || fail "the contained direct-PR ship got no task clone"
+  assert_grep "mode=direct-PR" "$S_HOME/state/$id.meta" "the task record lost the delivery mode"
+  assert_grep "runtime=container" "$S_HOME/state/$id.meta" "the task record does not say it runs in the container"
+  assert_grep "clone_base=$base" "$S_HOME/state/$id.meta" "the task record does not hold the commit the clone started from"
+  assert_equals "$base" "$(git -C "$clone" rev-parse HEAD)" "the clone did not start from the recorded base"
+  brief="$S_HOME/data/$id/launch-brief.md"
+  assert_grep "# Delivery under the container runtime" "$brief" "the launch brief still asks the contained worker to push and open its PR"
+  assert_grep "append \`done [at=<epoch>]: ready in branch fm/$id for host delivery\`" "$brief" "the launch brief does not name the ready-branch handoff"
+  assert_grep "$S_HOME/data/$id/delivery-evidence.md" "$brief" "the launch brief does not name the evidence file host delivery reads"
+  pass "a contained direct-PR ship spawns with the host-delivery handoff and its clone's starting commit recorded"
+}
+
+test_spawn_refuses_a_contained_ship_on_a_gerrit_project() {
+  local id=ctr-gerrit-z7 out status
+  make_spawn_world gerrit proj-g
+  printf '%s\n' '- proj-g [direct-PR forge=gerrit] - fixture (added 2026-01-01)' > "$S_HOME/data/projects.md"
+  fm_test_spawn_brief "$S_HOME" "$id"
+  printf '\n# Definition of done\nDelivery contract: mode=direct-PR forge=gerrit shape=squash\n' >> "$S_HOME/data/$id/brief.md"
+  : > "$S_LAUNCH"
+  out=$(FM_FAKE_LAUNCH_LOG="$S_LAUNCH" fm_test_run_spawn "$S_HOME" "$FM_TASK_CLONE_ROOT/$id/proj-g" \
+    "$S_FAKEBIN" "$id" "$S_PROJ" --mode direct-PR --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a contained ship of a Gerrit project launched"$'\n'"$out"
+  assert_contains "$out" "opens a GitHub pull request, not a Gerrit change" "the refusal does not say why"
+  assert_absent "$S_HOME/state/$id.meta" "a task record exists after the refusal"
+  assert_absent "$FM_TASK_CLONE_ROOT/$id" "a task clone exists after the refusal"
+  pass "a contained ship of a Gerrit project is refused, because host delivery opens only GitHub pull requests"
+}
+
 test_spawn_leaves_unselected_projects_unchanged() {
   local id=ctr-other-z3 out status launch
   make_spawn_world other proj-c
@@ -550,7 +586,7 @@ expect_container_refusal() {  # <label> <expected-text> <id> <spawn-args...>
 
 test_spawn_refuses_what_the_container_cannot_run() {
   make_spawn_world refuse-mode proj-d
-  expect_container_refusal "no-mistakes ship" "can only ship mode=local-only, not mode=no-mistakes" ctr-r1-z4 --mode no-mistakes --yolo off
+  expect_container_refusal "no-mistakes ship" "cannot ship mode=no-mistakes: the no-mistakes pipeline runs its review, test, lint, PR, and CI-fix agents and its commands on the host" ctr-r1-z4 --mode no-mistakes --yolo off
   expect_container_refusal "codex harness" "runs only the claude harness" ctr-r2-z4 --harness codex --mode local-only --yolo off
   printf 'bypass\n' > "$S_HOME/config/claude-permission-mode"
   expect_container_refusal "bypass mode" "must be auto" ctr-r3-z4 --mode local-only --yolo off
@@ -616,6 +652,8 @@ test_container_task_liveness_comes_from_its_container
 test_proxy_tunnels_only_allow_listed_hosts
 test_spawn_launches_a_selected_project_inside_its_container
 test_spawn_gives_a_container_scout_the_container_completion_overlay
+test_spawn_hands_a_contained_direct_pr_ship_to_host_delivery
+test_spawn_refuses_a_contained_ship_on_a_gerrit_project
 test_spawn_leaves_unselected_projects_unchanged
 test_spawn_refuses_what_the_container_cannot_run
 test_spawn_refuses_a_worker_plantable_symlink_for_the_hooks_file
