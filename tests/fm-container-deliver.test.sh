@@ -82,6 +82,8 @@ printf '%s\n' "$*" >> "$log"
 printf '%s\n' "$PWD" >> "$log.cwd"
 case "$*" in
   *isDraft*) printf '{"isDraft":false}\n' ;;
+  *state,headRefOid,url*)
+    printf 'MERGED\t%s\thttps://github.com/acme/widget/pull/7\n' "$(git --git-dir="${FM_FAKE_GH_REMOTE:?}" rev-parse refs/heads/fm/t1)" ;;
   *headRefOid*) git --git-dir="${FM_FAKE_GH_REMOTE:?}" rev-parse refs/heads/fm/t1 ;;
 esac
 exit 0
@@ -89,10 +91,11 @@ SH
   chmod +x "$1/gh"
 }
 
-# A tool that must never run on the host during delivery.
+# A tool that must never run on the host during delivery; it records where it
+# ran.
 make_sentinel() {  # <path> <exec-log>
-  # shellcheck disable=SC2016  # $0 and $* belong to the sentinel script
-  printf '#!/bin/sh\nprintf "%%s %%s\\n" "$0" "$*" >> %s\nexit 0\n' "'$2'" > "$1"
+  # shellcheck disable=SC2016  # $0, $*, and pwd belong to the sentinel script
+  printf '#!/bin/sh\nprintf "%%s %%s [cwd=%%s]\\n" "$0" "$*" "$(pwd -P)" >> %s\nexit 0\n' "'$2'" > "$1"
   chmod +x "$1"
 }
 
@@ -184,6 +187,21 @@ remote_branch() {
 
 assert_nothing_ran_on_the_host() {  # <label>
   [ ! -s "$D_EXEC" ] || fail "$1: project code or a hook ran on the host:"$'\n'"$(cat "$D_EXEC")"
+}
+
+# A landing fast-forwards the host's own project checkout - teardown through
+# bin/fm-fleet-sync.sh, a local merge directly - where the host's own git config
+# applies as it does to every landed change; nothing else may have run.
+assert_nothing_ran_but_in_the_project_checkout() {  # <label>
+  local line proj ran
+  proj=$(cd "$D_PROJ" && pwd -P)
+  ran=$(cat "$D_EXEC")
+  while IFS= read -r line; do
+    case "$line" in
+      ''|"$D/filter-or-fsmonitor "*"[cwd=$proj]") ;;
+      *) fail "$1: project code or a hook ran on the host:"$'\n'"$ran" ;;
+    esac
+  done <<<"$ran"
 }
 
 # The last status line must match <glob>.
@@ -339,15 +357,18 @@ host_tool() {  # <script> [args...]
     FM_FAKE_GH_REMOTE="$D/remote.git" PATH="$D_FAKEBIN:$PATH" "$ROOT/bin/$script" "$@" 2>&1
 }
 
-test_landing_tools_read_a_contained_clone_as_data() {
-  local out status tip url=https://github.com/acme/widget/pull/7 tool
-  make_world landing
-  tip=$(git -C "$D_CLONE" rev-parse HEAD)
-  out=$(deliver --ci-wait 0)
-  expect_code 0 "$?" "the delivery should succeed"$'\n'"$out"
-  git -C "$D/remote.git" update-ref refs/pull/7/head "$tip"
-  # After its ready report the worker swaps in a .git whose config points
-  # origin, diffs, credentials, and hooks at what it chose.
+# Fakes teardown reaches: an endpoint backend and a container runtime that
+# succeed and touch nothing real.
+make_teardown_fakes() {
+  printf '#!/bin/sh\nexit 0\n' > "$D_FAKEBIN/tmux"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\nexit 0\n' "'$D/podman.log'" > "$D_FAKEBIN/podman"
+  chmod +x "$D_FAKEBIN/tmux" "$D_FAKEBIN/podman"
+}
+
+# After its ready report the worker swaps in a .git whose config points origin,
+# diffs, credentials, and hooks at what it chose, all sentinels.
+swap_in_a_hostile_gitdir() {
+  local tool
   git init -q --bare "$D/attacker.git"
   git -C "$D/seed" checkout -q -b attack
   printf 'attacker content\n' > "$D/seed/lib.rs"
@@ -377,6 +398,17 @@ test_landing_tools_read_a_contained_clone_as_data() {
 EOF
   printf '* diff=evil\n' > "$D_CLONE/.git/info/attributes"
   : > "$D_EXEC"
+}
+
+test_the_landing_flow_reads_a_contained_clone_as_data() {
+  local out status tip url=https://github.com/acme/widget/pull/7
+  make_world landing
+  make_teardown_fakes
+  tip=$(git -C "$D_CLONE" rev-parse HEAD)
+  out=$(deliver --ci-wait 0)
+  expect_code 0 "$?" "the delivery should succeed"$'\n'"$out"
+  git -C "$D/remote.git" update-ref refs/pull/7/head "$tip"
+  swap_in_a_hostile_gitdir
 
   out=$(host_tool fm-review-diff.sh t1)
   status=$?
@@ -393,7 +425,63 @@ EOF
   assert_grep "pr_head=$tip" "$D_HOME/state/t1.meta" "the PR head was not recorded"
   assert_no_grep "$D_CLONE" "$D_LOG.gh.cwd" "gh ran inside the contained clone"
   assert_nothing_ran_on_the_host "the PR check"
-  pass "review diff and PR check read a contained clone as data: no worker-named origin, diff driver, helper, or hook runs on the host"
+
+  # The captain merges the PR.
+  git -C "$D/remote.git" update-ref refs/heads/main "$tip"
+  printf 'scratch\n' > "$D_CLONE/notes.txt"
+  out=$(host_tool fm-teardown.sh t1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "teardown removed a contained clone holding an untracked file"$'\n'"$out"
+  assert_contains "$out" "uncommitted changes" "the teardown refusal does not name the uncommitted work"
+  assert_present "$D_CLONE" "teardown removed a contained clone holding uncommitted work"
+  assert_nothing_ran_on_the_host "the refused teardown"
+  rm -f "$D_CLONE/notes.txt"
+
+  out=$(host_tool fm-teardown.sh t1)
+  status=$?
+  expect_code 0 "$status" "teardown of a delivered and merged contained ship should succeed"$'\n'"$out"
+  assert_absent "${D_CLONE%/*}" "teardown left the contained task's clone behind"
+  assert_grep "rm --force --ignore --time 10 fm-t1-abcdef012345" "$D/podman.log" "teardown did not remove the task's container"
+  assert_no_grep "$D_CLONE" "$D_LOG.gh.cwd" "a forge CLI ran inside the contained clone"
+  assert_nothing_ran_but_in_the_project_checkout "the teardown"
+  pass "deliver, review diff, PR check, and teardown read a contained clone as data: no worker-named origin, diff driver, helper, or hook runs on the host"
+}
+
+test_teardown_refuses_contained_work_host_delivery_never_pushed() {
+  local out status
+  make_world unlanded
+  make_teardown_fakes
+  out=$(deliver --ci-wait 0)
+  expect_code 0 "$?" "the delivery should succeed"$'\n'"$out"
+  write_meta "pr=https://github.com/acme/widget/pull/7" "$(grep '^delivered_head=' "$D_HOME/state/t1.meta")"
+  printf 'pub fn sub(a: i32, b: i32) -> i32 { a - b }\n' >> "$D_CLONE/lib.rs"
+  git -C "$D_CLONE" -c core.hooksPath=/dev/null commit -q -am 'Add sub after delivery'
+  # A remote-tracking ref the worker writes proves nothing.
+  git -C "$D_CLONE" update-ref refs/remotes/origin/fm/t1 HEAD
+  : > "$D_EXEC"
+  out=$(host_tool fm-teardown.sh t1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "teardown removed a contained clone holding a commit host delivery never pushed"$'\n'"$out"
+  assert_contains "$out" "not on any remote and not landed" "the teardown refusal does not name the unlanded work"
+  assert_present "$D_CLONE" "teardown removed unlanded contained work"
+  assert_nothing_ran_on_the_host "the refused teardown"
+  pass "teardown refuses a contained clone's commit that host delivery never pushed and that never landed"
+}
+
+test_a_contained_local_only_branch_merges_from_a_snapshot() {
+  local out status tip
+  make_world local-only
+  write_meta mode=local-only
+  tip=$(git -C "$D_CLONE" rev-parse HEAD)
+  swap_in_a_hostile_gitdir
+  # A repository format git refuses proves the merge never reads this config.
+  printf '[core]\n\trepositoryformatversion = 99\n' >> "$D_CLONE/.git/config"
+  out=$(host_tool fm-merge-local.sh t1)
+  status=$?
+  expect_code 0 "$status" "a contained local-only branch should merge"$'\n'"$out"
+  assert_equals "$tip" "$(git -C "$D_PROJ" rev-parse main)" "the project's main was not fast-forwarded to the contained branch"
+  assert_nothing_ran_but_in_the_project_checkout "the local merge"
+  pass "a contained local-only branch is checked and imported from a snapshot, never from its clone's git config"
 }
 
 test_ci_outcomes_are_reported_without_an_agent() {
@@ -561,7 +649,9 @@ test_a_clean_branch_is_pushed_published_and_reported
 test_a_redelivery_reuses_the_open_pr_and_a_draft_is_marked_ready
 test_a_redelivery_waits_for_the_pr_head_to_reach_the_pushed_commit
 test_worker_written_git_config_never_runs_or_redirects_on_the_host
-test_landing_tools_read_a_contained_clone_as_data
+test_the_landing_flow_reads_a_contained_clone_as_data
+test_teardown_refuses_contained_work_host_delivery_never_pushed
+test_a_contained_local_only_branch_merges_from_a_snapshot
 test_ci_outcomes_are_reported_without_an_agent
 test_each_unverifiable_branch_is_refused
 test_a_diverged_remote_branch_is_never_overwritten

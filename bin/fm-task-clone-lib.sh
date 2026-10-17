@@ -195,8 +195,8 @@ fm_task_clone_owned() {  # <worktree> <task-id> <home> [container]
 # Remove the task directory holding <task-id>'s clone, after proving ownership.
 # Go module trees and git objects can be read-only, so write permission is
 # restored first.
-fm_task_clone_remove() {  # <worktree> <task-id> <home>
-  fm_task_clone_owned "$1" "$2" "$3" || {
+fm_task_clone_remove() {  # <worktree> <task-id> <home> [container]
+  fm_task_clone_owned "$1" "$2" "$3" "${4:-}" || {
     echo "error: $1 is not a task clone this home made for $2; refusing to remove it" >&2
     return 1
   }
@@ -216,6 +216,33 @@ fm_task_clone_remove() {  # <worktree> <task-id> <home>
 # git in a private snapshot (fm_task_clone_snapshot) whose config it writes.
 # These helpers bound their reads with fm_run_timed, so their callers source
 # bin/fm-timeout-lib.sh.
+
+# Print `container` when the task record <meta> says runtime=container, the
+# shape argument fm_task_clone_shaped, fm_task_clone_owned, and
+# fm_task_clone_remove take; print nothing otherwise.
+fm_task_clone_shape() {  # <meta>
+  if [ "$(grep '^runtime=' "$1" 2>/dev/null | tail -1 | cut -d= -f2-)" = container ]; then
+    printf 'container\n'
+  fi
+}
+
+# Print the owner/repo a github.com remote URL names, or fail.
+fm_task_clone_github_slug() {  # <url>
+  local slug=
+  case "$1" in
+    https://github.com/*) slug=${1#https://github.com/} ;;
+    git@github.com:*) slug=${1#git@github.com:} ;;
+    ssh://git@github.com/*) slug=${1#ssh://git@github.com/} ;;
+  esac
+  slug=${slug%/}
+  slug=${slug%.git}
+  case "$slug" in
+    */*/*|''|/*|*/) return 1 ;;
+    *[!A-Za-z0-9._/-]*) return 1 ;;
+    */*) printf '%s\n' "$slug" ;;
+    *) return 1 ;;
+  esac
+}
 
 # Print the first <max-bytes> of a worker-written file, refusing anything but
 # a regular file.
@@ -281,6 +308,52 @@ fm_task_clone_project_objects() {  # <project-clone>
   (cd "$common/objects" 2>/dev/null && pwd -P)
 }
 
+# git in the snapshot fm_task_clone_snapshot last built, without the host's
+# global or system config.
+fm_task_clone_snapshot_git() {  # <git-args...>
+  (cd "$FM_TASK_CLONE_SNAPSHOT" && "${FM_TASK_CLONE_GIT_ENV[@]}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@")
+}
+
+# git in that snapshot with the host's own config, for a fetch's credentials.
+fm_task_clone_snapshot_remote_git() {  # <git-args...>
+  (cd "$FM_TASK_CLONE_SNAPSHOT" && "${FM_TASK_CLONE_GIT_ENV[@]}" git "$@")
+}
+
+# Copy <ref> from <clone-git-dir>, read as data, into the snapshot.
+fm_task_clone_snapshot_ref() {  # <clone-git-dir> <ref>
+  local sha
+  sha=$(fm_task_clone_ref_data "$1" "$2") || return 1
+  fm_task_clone_snapshot_git update-ref "$2" "$sha" 2>/dev/null
+}
+
+# Give the snapshot the clone's HEAD, read as data: the branch it names, with
+# that branch's tip, or its detached commit.
+fm_task_clone_snapshot_head() {  # <clone-git-dir>
+  local head
+  head=$(fm_task_clone_head_data "$1") || return 1
+  case "$head" in
+    refs/heads/*)
+      fm_task_clone_snapshot_ref "$1" "$head" || true
+      fm_task_clone_snapshot_git symbolic-ref HEAD "$head" ;;
+    *) fm_task_clone_snapshot_git update-ref --no-deref HEAD "$head" 2>/dev/null ;;
+  esac
+}
+
+# Print `git status <status-args>` of the clone at <clone-dir> against the
+# snapshot's HEAD, with the clone as work tree, a private copy of its index,
+# and its info/exclude read as patterns, never running git inside a submodule.
+fm_task_clone_status() {  # <clone-dir> <status-args...>
+  local clone=$1 priv=$FM_TASK_CLONE_SNAPSHOT exclude=$1/.git/info/exclude
+  shift
+  [ -f "$clone/.git/index" ] && [ ! -L "$clone/.git/index" ] || return 1
+  fm_run_timed 60 cp -- "$clone/.git/index" "$priv/index" || return 1
+  if [ -e "$exclude" ] || [ -L "$exclude" ]; then
+    fm_task_clone_plain_file "$exclude" 1048576 >"$priv/info/exclude" || return 1
+  fi
+  (cd "$clone" && "${FM_TASK_CLONE_GIT_ENV[@]}" GIT_WORK_TREE="$clone" GIT_INDEX_FILE="$priv/index" \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git status --ignore-submodules=dirty "$@")
+}
+
 # Build at <private-git-dir> the bare repository a host tool runs git in instead
 # of <clone-git-dir>: a copy of the clone's own object store without
 # objects/info, refused when it holds anything but regular files and
@@ -289,16 +362,18 @@ fm_task_clone_project_objects() {  # <project-clone>
 # multi-pack-indexes, pack bitmaps, automatic maintenance, and submodule
 # recursion off, and no filter, driver, or helper defined. Its HEAD is unborn
 # and it has no refs; the caller writes what it read as data. Sets
-# FM_TASK_CLONE_GIT_ENV, the env(1) prefix that runs a command in it with none
-# of the caller's repository environment; a read adds GIT_CONFIG_GLOBAL=/dev/null
-# GIT_CONFIG_NOSYSTEM=1, and only a fetch or push, for its credentials, reads
-# the host's own config. 1 with FM_TASK_CLONE_ERROR naming why.
+# FM_TASK_CLONE_SNAPSHOT to it and FM_TASK_CLONE_GIT_ENV, the env(1) prefix
+# that runs a command in it with none of the caller's repository environment;
+# fm_task_clone_snapshot_git reads without the host's config, and only a fetch
+# or push, for its credentials, reads it. 1 with FM_TASK_CLONE_ERROR naming why.
 FM_TASK_CLONE_ERROR=
+FM_TASK_CLONE_SNAPSHOT=
 FM_TASK_CLONE_GIT_ENV=()
 # shellcheck disable=SC2034 # Output globals, read by the sourcing caller.
 fm_task_clone_snapshot() {  # <clone-git-dir> <private-git-dir> <project-clone>
   local src=$1 priv=$2 project=$3 objects format odd
   FM_TASK_CLONE_ERROR=
+  FM_TASK_CLONE_SNAPSHOT=$priv
   FM_TASK_CLONE_GIT_ENV=(env -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY
     -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR
     GIT_DIR="$priv" GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0)

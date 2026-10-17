@@ -207,7 +207,7 @@ project_git() {
 # read as data.
 PRIV_GIT=$PRIVATE/repo.git
 priv_git() {
-  (cd "$PRIVATE" && "${FM_TASK_CLONE_GIT_ENV[@]}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@")
+  fm_task_clone_snapshot_git "$@"
 }
 
 # --- 2. the clone's object sources ---------------------------------------------
@@ -234,18 +234,8 @@ printf '%s\n' "$TIP" >"$PRIV_GIT/HEAD" || die "could not create the private repo
 priv_git rev-parse --verify --quiet "$TIP^{commit}" >/dev/null 2>&1 || refuse "branch $BRANCH has no commit"
 
 # --- 4. nothing uncommitted ------------------------------------------------------
-if [ ! -f "$CLONE_GIT_DIR/index" ] || [ -L "$CLONE_GIT_DIR/index" ] ||
-  ! fm_run_timed 60 cp -- "$CLONE_GIT_DIR/index" "$PRIVATE/index"; then
-  refuse "the clone's index could not be read"
-fi
-exclude="$CLONE_GIT_DIR/info/exclude"
-if [ -e "$exclude" ] || [ -L "$exclude" ]; then
-  fm_task_clone_plain_file "$exclude" 1048576 >"$PRIV_GIT/info/exclude" || refuse "the clone's info/exclude is not a regular file"
-fi
-dirty=$(cd "$CLONE_DIR" && "${FM_TASK_CLONE_GIT_ENV[@]}" GIT_WORK_TREE="$CLONE_DIR" GIT_INDEX_FILE="$PRIVATE/index" \
-  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-  git status --porcelain=v1 --untracked-files=all --ignore-submodules=dirty 2>/dev/null) ||
-  refuse "the clone's status could not be read"
+dirty=$(fm_task_clone_status "$CLONE_DIR" --porcelain=v1 --untracked-files=all 2>/dev/null) ||
+  refuse "the clone's status, index, or info/exclude could not be read"
 [ -z "$dirty" ] || refuse "the clone has uncommitted or untracked changes:"$'\n'"$dirty"
 
 # --- 5. descends from where the clone started ------------------------------------
@@ -268,20 +258,8 @@ fi
 PROJECT_ORIGIN=$(project_git config --get remote.origin.url 2>/dev/null) || PROJECT_ORIGIN=
 [ -n "$ORIGIN" ] && [ "$ORIGIN" = "$PROJECT_ORIGIN" ] ||
   refuse "the clone's origin '${ORIGIN:-<none>}' is not its project clone's origin '${PROJECT_ORIGIN:-<none>}'"
-slug=
-case "$PROJECT_ORIGIN" in
-  https://github.com/*) slug=${PROJECT_ORIGIN#https://github.com/} ;;
-  git@github.com:*) slug=${PROJECT_ORIGIN#git@github.com:} ;;
-  ssh://git@github.com/*) slug=${PROJECT_ORIGIN#ssh://git@github.com/} ;;
-esac
-slug=${slug%/}
-slug=${slug%.git}
-case "$slug" in
-  */*/*|''|/*|*/) slug= ;;
-  *[!A-Za-z0-9._/-]*) slug= ;;
-esac
-[ -n "$slug" ] || refuse "origin '$PROJECT_ORIGIN' does not name a github.com repository, the only forge host delivery opens PRs on"
-SLUG=$slug
+SLUG=$(fm_task_clone_github_slug "$PROJECT_ORIGIN") ||
+  refuse "origin '$PROJECT_ORIGIN' does not name a github.com repository, the only forge host delivery opens PRs on"
 
 # --- 8. the worker's evidence --------------------------------------------------------
 EVIDENCE="$DATA/$ID/delivery-evidence.md"

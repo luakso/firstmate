@@ -21,6 +21,9 @@
 # only after the captain-hold check is it fetched into the project under the
 # temporary ref refs/fm-task-clone/<task-id>, fast-forwarded onto, and the
 # temporary ref deleted again; the project never gains a branch for it.
+# A contained task's clone (runtime=container) is read only as data
+# (bin/fm-task-clone-lib.sh "CONTAINED CLONES"): its branch is copied into a
+# private snapshot, which every check reads and the project fetches from.
 # Usage: fm-merge-local.sh <task-id>
 set -eu
 
@@ -32,6 +35,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-backlog-transition-lib.sh
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-task-clone-lib.sh
 . "$SCRIPT_DIR/fm-task-clone-lib.sh"
 if [ "$#" -ne 1 ] || ! fm_pr_task_id_valid "$1"; then
@@ -68,8 +73,10 @@ MERGE_EXPECTED_SPAWN_GEN=$FM_BACKLOG_META_SPAWN_GEN
 
 MERGE_CONTROL_LOCK=
 IMPORT_REF=
+MERGE_PRIVATE=
 merge_control_cleanup() {
   [ -z "$IMPORT_REF" ] || git -C "$PROJ" update-ref -d "$IMPORT_REF" 2>/dev/null || true
+  [ -z "$MERGE_PRIVATE" ] || { chmod -R u+w -- "$MERGE_PRIVATE" 2>/dev/null; rm -rf -- "$MERGE_PRIVATE"; }
   [ -z "$MERGE_CONTROL_LOCK" ] || fm_lock_release "$MERGE_CONTROL_LOCK" || true
 }
 trap merge_control_cleanup EXIT
@@ -111,14 +118,31 @@ if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
   exit 1
 fi
 CLONE=
+CLONE_SHAPE=
 if [ "$(grep '^worktree_layout=' "$META" | cut -d= -f2- || true)" = clone ]; then
   CLONE=$(grep '^worktree=' "$META" | cut -d= -f2- || true)
-  fm_task_clone_owned "$CLONE" "$ID" "$FM_HOME" || { echo "error: task $ID's recorded clone ${CLONE:-<missing>} is not the task clone this home made for it; refusing to merge from it" >&2; exit 1; }
+  CLONE_SHAPE=$(fm_task_clone_shape "$META")
+  fm_task_clone_owned "$CLONE" "$ID" "$FM_HOME" "$CLONE_SHAPE" || { echo "error: task $ID's recorded clone ${CLONE:-<missing>} is not the task clone this home made for it; refusing to merge from it" >&2; exit 1; }
   MERGE_REPO=$CLONE
 else
   MERGE_REPO=$PROJ
 fi
-BRANCH_TIP=$(git -C "$MERGE_REPO" rev-parse --verify --quiet "refs/heads/$BRANCH^{commit}") || { echo "error: branch $BRANCH does not exist in $MERGE_REPO" >&2; exit 1; }
+FETCH_SOURCE=$CLONE
+if [ "$CLONE_SHAPE" = container ]; then
+  MERGE_PRIVATE=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/fm-merge-local.XXXXXXXX") || { echo "error: could not create a private directory to read task $ID's clone" >&2; exit 1; }
+  CLONE_GIT_DIR="$(cd "$CLONE" && pwd -P)/.git"
+  fm_task_clone_snapshot "$CLONE_GIT_DIR" "$MERGE_PRIVATE/repo.git" "$PROJ" || { echo "error: cannot read task $ID's clone $CLONE as data: $FM_TASK_CLONE_ERROR" >&2; exit 1; }
+  fm_task_clone_snapshot_ref "$CLONE_GIT_DIR" "refs/heads/$BRANCH" || true
+  FETCH_SOURCE=$MERGE_PRIVATE/repo.git
+fi
+merge_repo_git() {
+  if [ "$CLONE_SHAPE" = container ]; then
+    fm_task_clone_snapshot_git "$@"
+  else
+    git -C "$MERGE_REPO" "$@"
+  fi
+}
+BRANCH_TIP=$(merge_repo_git rev-parse --verify --quiet "refs/heads/$BRANCH^{commit}") || { echo "error: branch $BRANCH does not exist in $MERGE_REPO" >&2; exit 1; }
 
 DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
 DEFAULT_TIP=$(git -C "$PROJ" rev-parse --verify --quiet "refs/heads/$DEFAULT^{commit}") || { echo "error: cannot resolve local $DEFAULT in $PROJ" >&2; exit 1; }
@@ -134,7 +158,7 @@ fi
 
 # Clean fast-forward only: DEFAULT must be an ancestor of BRANCH. A task clone
 # reads the project's commits through its alternates, so it can answer this.
-if ! git -C "$MERGE_REPO" merge-base --is-ancestor "$DEFAULT_TIP" "$BRANCH_TIP"; then
+if ! merge_repo_git merge-base --is-ancestor "$DEFAULT_TIP" "$BRANCH_TIP"; then
   echo "REFUSED: $BRANCH is not a fast-forward of $DEFAULT (it has diverged)." >&2
   echo "Have the crewmate rebase $BRANCH onto $DEFAULT, then retry." >&2
   exit 1
@@ -158,7 +182,7 @@ esac
 merge_status=0
 if [ -n "$CLONE" ]; then
   IMPORT_REF="refs/fm-task-clone/$ID"
-  git -C "$PROJ" fetch --quiet --no-tags --no-write-fetch-head "$CLONE" "+refs/heads/$BRANCH:$IMPORT_REF" || {
+  git -C "$PROJ" fetch --quiet --no-tags --no-write-fetch-head "$FETCH_SOURCE" "+refs/heads/$BRANCH:$IMPORT_REF" || {
     echo "error: could not fetch $BRANCH from task clone $CLONE into $PROJ" >&2
     exit 1
   }

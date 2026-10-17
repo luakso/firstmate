@@ -901,7 +901,13 @@ nm_runs_list() {
 
 # CREW_BRANCH is empty at detached HEAD (a just-spawned crew, or a scout's
 # scratch worktree); with no branch there is no run to attribute to this crew.
-CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+# A contained ship never runs no-mistakes (bin/fm-spawn.sh refuses it), and no
+# tool runs in its clone (bin/fm-task-clone-lib.sh "CONTAINED CLONES"), so it
+# has no run to attribute either.
+CREW_BRANCH=
+if [ -z "$(fm_task_clone_shape "$META")" ]; then
+  CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+fi
 
 # 0 if the active axi-status run's head field matches this worktree's code
 # identity. Branch match is a precondition (caller). Rule owned by

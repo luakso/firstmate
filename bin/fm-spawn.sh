@@ -1477,7 +1477,7 @@ spawn_abort_cleanup() {
     [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
     SPAWN_TASK_CLONE_CREATED=0
     if [ "$SPAWN_LAUNCH_SENT" = 0 ] || [ "$SPAWN_ENDPOINT_CLOSED" = 1 ]; then
-      fm_task_clone_remove "$WT" "$ID" "$FM_HOME" ||
+      fm_task_clone_remove "$WT" "$ID" "$FM_HOME" "$([ "${CONTAINER_ACTIVE:-0}" != 1 ] || echo container)" ||
         echo "warning: could not remove task $ID's clone $WT after the aborted spawn" >&2
     else
       echo "warning: leaving task $ID's clone $WT in place: a worker may still be running in it and no task record names it" >&2

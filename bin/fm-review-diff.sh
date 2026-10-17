@@ -108,29 +108,23 @@ fi
 # only wt_fetch reads the host's own config, for its credentials.
 wt_git() {
   if "$CONTAINED"; then
-    (cd "$PRIVATE" && "${FM_TASK_CLONE_GIT_ENV[@]}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@")
+    fm_task_clone_snapshot_git "$@"
   else
     git -C "$WT" "$@"
   fi
 }
 wt_fetch() {
   if "$CONTAINED"; then
-    (cd "$PRIVATE" && "${FM_TASK_CLONE_GIT_ENV[@]}" git "$@")
+    fm_task_clone_snapshot_remote_git "$@"
   else
     git -C "$WT" "$@"
   fi
 }
 if "$CONTAINED"; then
-  CLONE_HEAD=$(fm_task_clone_head_data "$CLONE_GIT_DIR" || true)
-  for ref in "refs/heads/$DEFAULT" "refs/heads/$BRANCH" "$CLONE_HEAD"; do
-    case "$ref" in refs/heads/*) ;; *) continue ;; esac
-    sha=$(fm_task_clone_ref_data "$CLONE_GIT_DIR" "$ref") || continue
-    wt_git update-ref "$ref" "$sha" 2>/dev/null || true
+  for ref in "refs/heads/$DEFAULT" "refs/heads/$BRANCH"; do
+    fm_task_clone_snapshot_ref "$CLONE_GIT_DIR" "$ref" || true
   done
-  case "$CLONE_HEAD" in
-    refs/heads/*) wt_git symbolic-ref HEAD "$CLONE_HEAD" ;;
-    ?*) wt_git update-ref --no-deref HEAD "$CLONE_HEAD" 2>/dev/null || true ;;
-  esac
+  fm_task_clone_snapshot_head "$CLONE_GIT_DIR" || true
   if PROJECT_ORIGIN=$(git -C "$PROJ" remote get-url origin 2>/dev/null); then
     wt_git config remote.origin.url "$PROJECT_ORIGIN"
   fi
