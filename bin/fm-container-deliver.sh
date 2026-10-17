@@ -16,54 +16,63 @@
 # credentials and has no route to the forge, so a poisoned dependency running
 # in its build can push nothing anywhere. This script does only the outward
 # steps and never runs project code: no build, test, lint, formatter, git
-# hook, or agent runs here. Every git command run against the clone, the push
-# included, is pinned to the clone's own .git by GIT_DIR and GIT_COMMON_DIR, so
-# a commondir file the worker writes later cannot point it at another
-# repository's config. Every git command that reads the clone runs with hooks
-# and fsmonitor off, replace refs and grafts ignored, no global or system
-# config, and no git run inside a submodule, so no filter or helper a host or
-# submodule config names runs on worker-written files; only the push reads the
-# host's git config, for its credentials, and it reads objects, never the
-# working tree, and never recurses into submodules.
+# hook, or agent runs here. The worker can rewrite anything under the clone's
+# .git, even swap the directory, so git never runs in the clone's repository.
+# Every git command runs in a private bare repository in a temporary directory,
+# with config this script writes: hooks, fsmonitor, the untracked cache,
+# commit-graphs, multi-pack-indexes, and pack bitmaps off, and no filter or
+# helper defined. It holds a copy of the clone's own object store and borrows
+# only the project clone's. The clone's HEAD, branch ref, index, info/exclude,
+# and config are read as plain data, and the clone itself is touched only as
+# the work tree of the clean-tree status, which runs no git inside a
+# submodule. Only the push reads the host's git config, for its credentials;
+# it pushes to the project clone's origin URL and never recurses into
+# submodules.
 #
 # WHAT IT REFUSES. It publishes nothing unless every check passes, in order:
 #   1. the task record (state/<id>.meta) is a ship with mode=direct-PR and
 #      runtime=container, with a valid recorded branch and clone_base=, and
 #      its worktree is the task clone this home made for it
 #      (fm_task_clone_owned), whose .git holds no commondir file;
-#   2. the clone is not shallow, and it borrows objects only from its project
-#      clone's object store (objects/info/alternates), so every object it
-#      pushes is one it or its project holds;
-#   3. the clone's HEAD is the recorded branch, refs/heads/<branch>;
+#   2. the clone is not shallow, it borrows objects only from its project
+#      clone's object store (objects/info/alternates), and its own object
+#      store, copied into the private repository without objects/info, holds
+#      only regular files and directories, so every object it pushes is one
+#      it or its project holds;
+#   3. the clone's .git/HEAD reads `ref: refs/heads/<branch>` for the recorded
+#      branch, and that ref, loose or in packed-refs, names a commit;
 #   4. the clone has no uncommitted change and no untracked file it does not
-#      ignore, a submodule counting only by the commit it records;
+#      ignore, read against a private copy of its index, a submodule counting
+#      only by the commit it records;
 #   5. the branch tip descends from clone_base and adds at least one commit;
 #   6. no commit after clone_base, merges included, touches a protected path:
 #      anything under .github/ in any letter case, which holds the workflows,
 #      actions, CODEOWNERS, and other files that decide what GitHub runs with
 #      the repository's secrets and who must approve;
-#   7. the clone's origin URL is exactly its project clone's origin URL and
-#      names a github.com repository;
+#   7. the clone's recorded origin URL is exactly its project clone's origin
+#      URL, which names a github.com repository;
 #   8. data/<id>/delivery-evidence.md is a regular file, not a symlink, of at
 #      most 48 KiB of text whose first line is `head: <the tip's full SHA>`;
 #   9. gh-axi is installed.
 # A refusal names the failed check, changes nothing, and exits 1.
 #
 # WHAT IT DOES. It pushes the verified SHA, not the branch name, to
-# refs/heads/<branch> on origin with --no-verify and without --force, so a
-# commit made after the checks is never published and a remote branch that
-# diverged is refused rather than overwritten. It refreshes the body of the
-# branch's open PR, or opens one against the project's default branch titled
-# with the oldest new commit's subject, and marks it ready if it opened as a
-# draft. The PR body is the commit list plus the worker's evidence file, all
+# refs/heads/<branch> at the project clone's origin URL with --no-verify and
+# without --force, so a commit made after the checks is never published and a
+# remote branch that diverged is refused rather than overwritten, and records
+# that SHA as delivered_head= in the task record under its meta lock. It
+# refreshes the body of the branch's open PR, or opens one against the
+# project's default branch titled with the oldest new commit's subject, and
+# marks it ready if it opened as a draft. The PR body is the commit list plus the worker's evidence file, all
 # worker-written text. The task's control lock is held from the first check
 # through the PR, so teardown, relaunch, or a second delivery cannot
 # interleave; it is released before the CI wait.
 # It then reads the PR's checks (gh-axi pr checks) until they settle or
 # --ci-wait runs out, trusting a read only once gh-axi reports the PR's head
 # commit is the pushed SHA (a stale or unreadable head counts as pending, so a
-# redelivery never reports the previous head's checks), and appends exactly one line to state/<id>.status, the
-# channel the worker reports on, unless the task record changed meanwhile:
+# redelivery never reports the previous head's checks), and appends exactly
+# one line to state/<id>.status, the channel the worker reports on, unless the
+# task record changed meanwhile:
 #   done: PR <url> checks green              every check passed
 #   done: PR <url> (no CI checks reported)   none appeared within the grace
 #   done: PR <url> (CI checks not settled)   the wait ran out, or --ci-wait 0
@@ -71,9 +80,10 @@
 #     their failed-job logs are saved for firstmate to relay to the worker in
 #     the host-only <task-dir>/container/ci-failures.md, which the container
 #     never mounts and teardown removes with the clone
-# A done: is the ordinary direct-PR ready signal, which bin/fm-dod-lib.sh gates
-# on the pushed head. Exit status: 0 after a done:, 3 after the blocked: line,
-# 1 on a refusal or failure, 2 on bad usage.
+# A done: is the ordinary direct-PR ready signal, which bin/fm-dod-lib.sh
+# accepts only while the clone's HEAD is the recorded delivered_head. Exit
+# status: 0 after a done:, 3 after the blocked: line, 1 on a refusal or
+# failure, 2 on bad usage.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -144,10 +154,14 @@ meta_value() {  # <key>
 
 PRIVATE=
 CONTROL_LOCK=
+META_LOCK=
+META_TMP=
 # shellcheck disable=SC2329  # invoked by the EXIT trap
 cleanup() {
+  [ -z "$META_TMP" ] || rm -f -- "$META_TMP"
+  [ -z "$META_LOCK" ] || fm_lock_release "$META_LOCK" || true
   [ -z "$CONTROL_LOCK" ] || fm_lock_release "$CONTROL_LOCK" || true
-  [ -z "$PRIVATE" ] || rm -rf -- "$PRIVATE"
+  [ -z "$PRIVATE" ] || { chmod -R u+w -- "$PRIVATE" 2>/dev/null; rm -rf -- "$PRIVATE"; }
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
@@ -185,71 +199,123 @@ CLONE_DIR=$(cd "$WT" 2>/dev/null && pwd -P) || refuse "its recorded worktree $WT
 CLONE_GIT_DIR=$CLONE_DIR/.git
 [ -n "$PROJ" ] && [ -d "$PROJ" ] || refuse "its project clone ${PROJ:-<missing>} is not a directory"
 
-# Read the worker-written clone without anything it could make run here.
-clone_git() {
-  env -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
-    GIT_DIR="$CLONE_GIT_DIR" GIT_COMMON_DIR="$CLONE_GIT_DIR" GIT_WORK_TREE="$CLONE_DIR" \
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 \
-    GIT_GRAFT_FILE=/dev/null GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 \
-    git -C "$WT" -c core.fsmonitor=false -c core.hooksPath=/dev/null "$@"
-}
 project_git() {
   env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
     -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_OPTIONAL_LOCKS=0 \
     git -C "$PROJ" -c core.fsmonitor=false -c core.hooksPath=/dev/null "$@"
 }
+# Print the first <max-bytes> of a worker-written file, refusing anything but
+# a regular file.
+plain_file() {  # <path> <max-bytes>
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  fm_run_timed 10 head -c "$2" -- "$1"
+}
+# Every git command runs in this private repository, whose config this script
+# writes; the clone's own git files are only ever read as data.
+PRIV_GIT=$PRIVATE/repo.git
+PRIV_ENV=(env -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY
+  -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR
+  GIT_DIR="$PRIV_GIT" GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0)
+priv_git() {
+  (cd "$PRIVATE" && "${PRIV_ENV[@]}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@")
+}
 
 # --- 2. the clone's object sources ---------------------------------------------
-[ "$(clone_git rev-parse --is-shallow-repository 2>/dev/null)" = false ] || refuse "the clone is shallow or unreadable"
+[ ! -e "$CLONE_GIT_DIR/shallow" ] && [ ! -L "$CLONE_GIT_DIR/shallow" ] || refuse "the clone is shallow"
 if ! project_objects=$(project_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) ||
   ! project_objects=$(cd "$project_objects/objects" 2>/dev/null && pwd -P); then
   refuse "the project clone's object store is unreadable"
 fi
-alternates="$WT/.git/objects/info/alternates"
+object_format=$(project_git rev-parse --show-object-format 2>/dev/null) || refuse "the project clone's object format is unreadable"
+alternates="$CLONE_GIT_DIR/objects/info/alternates"
 if [ -e "$alternates" ] || [ -L "$alternates" ]; then
-  [ -f "$alternates" ] && [ ! -L "$alternates" ] || refuse "the clone's objects/info/alternates is not a regular file"
+  alternates_text=$(plain_file "$alternates" 65536) || refuse "the clone's objects/info/alternates is not a regular file"
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
-    case "$line" in /*) ;; *) line="$WT/.git/objects/$line" ;; esac
+    case "$line" in /*) ;; *) line="$CLONE_GIT_DIR/objects/$line" ;; esac
     real=$(cd "$line" 2>/dev/null && pwd -P) || real=
     [ -n "$real" ] && [ "$real" = "$project_objects" ] ||
       refuse "the clone borrows objects from $line, not only from its project clone's object store"
-  done <"$alternates"
+  done <<<"$alternates_text"
 fi
+[ -d "$CLONE_GIT_DIR/objects" ] && [ ! -L "$CLONE_GIT_DIR/objects" ] || refuse "the clone's object store is not a directory"
+mkdir -p "$PRIV_GIT/refs" "$PRIV_GIT/info" || die "could not create the private repository"
+if ! fm_run_timed 300 cp -RP -- "$CLONE_GIT_DIR/objects" "$PRIV_GIT/objects" 2>/dev/null ||
+  ! chmod -R u+w -- "$PRIV_GIT/objects" || ! rm -rf -- "$PRIV_GIT/objects/info"; then
+  refuse "the clone's object store could not be copied"
+fi
+odd=$(find "$PRIV_GIT/objects" ! -type f ! -type d -print 2>/dev/null | head -n 1)
+[ -z "$odd" ] || refuse "the clone's object store holds ${odd#"$PRIV_GIT/"}, which is not a regular file or directory"
+mkdir -p "$PRIV_GIT/objects/info" || die "could not create the private repository"
+printf '%s\n' "$project_objects" >"$PRIV_GIT/objects/info/alternates" || die "could not create the private repository"
+{
+  if [ "$object_format" = sha256 ]; then
+    printf '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n'
+  else
+    printf '[core]\n\trepositoryformatversion = 0\n'
+  fi
+  printf '[core]\n\tbare = true\n\tcommitGraph = false\n\tmultiPackIndex = false\n\tuntrackedCache = false\n\tfsmonitor = false\n\thooksPath = /dev/null\n'
+  printf '[pack]\n\tuseBitmaps = false\n\treadReverseIndex = false\n'
+  printf '[gc]\n\tauto = 0\n'
+} >"$PRIV_GIT/config" || die "could not create the private repository"
 
 # --- 3. HEAD is the recorded branch --------------------------------------------
-[ "$(clone_git symbolic-ref --quiet HEAD 2>/dev/null)" = "refs/heads/$BRANCH" ] ||
-  refuse "the clone's HEAD is not its recorded branch $BRANCH"
-TIP=$(clone_git rev-parse --verify --quiet "refs/heads/$BRANCH^{commit}") || refuse "branch $BRANCH has no commit"
+clone_head=$(plain_file "$CLONE_GIT_DIR/HEAD" 1024) || clone_head=
+[ "$clone_head" = "ref: refs/heads/$BRANCH" ] || refuse "the clone's HEAD is not its recorded branch $BRANCH"
+loose_ref="$CLONE_GIT_DIR/refs/heads/$BRANCH"
+if [ -e "$loose_ref" ] || [ -L "$loose_ref" ]; then
+  TIP=$(plain_file "$loose_ref" 128) || TIP=
+elif [ -f "$CLONE_GIT_DIR/packed-refs" ] && [ ! -L "$CLONE_GIT_DIR/packed-refs" ]; then
+  # shellcheck disable=SC2016  # awk, not the shell, expands $1 and $2
+  TIP=$(fm_run_timed 30 awk -v ref="refs/heads/$BRANCH" '$2 == ref && NF == 2 { print $1; exit }' "$CLONE_GIT_DIR/packed-refs") || TIP=
+else
+  TIP=
+fi
+fm_pr_head_valid "$TIP" || refuse "branch $BRANCH has no commit"
+printf '%s\n' "$TIP" >"$PRIV_GIT/HEAD" || die "could not create the private repository"
+priv_git rev-parse --verify --quiet "$TIP^{commit}" >/dev/null 2>&1 || refuse "branch $BRANCH has no commit"
 
 # --- 4. nothing uncommitted ------------------------------------------------------
-dirty=$(clone_git status --porcelain=v1 --untracked-files=all --ignore-submodules=dirty 2>/dev/null) ||
+if [ ! -f "$CLONE_GIT_DIR/index" ] || [ -L "$CLONE_GIT_DIR/index" ] ||
+  ! fm_run_timed 60 cp -- "$CLONE_GIT_DIR/index" "$PRIVATE/index"; then
+  refuse "the clone's index could not be read"
+fi
+exclude="$CLONE_GIT_DIR/info/exclude"
+if [ -e "$exclude" ] || [ -L "$exclude" ]; then
+  plain_file "$exclude" 1048576 >"$PRIV_GIT/info/exclude" || refuse "the clone's info/exclude is not a regular file"
+fi
+dirty=$(cd "$CLONE_DIR" && "${PRIV_ENV[@]}" GIT_WORK_TREE="$CLONE_DIR" GIT_INDEX_FILE="$PRIVATE/index" \
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  git status --porcelain=v1 --untracked-files=all --ignore-submodules=dirty 2>/dev/null) ||
   refuse "the clone's status could not be read"
 [ -z "$dirty" ] || refuse "the clone has uncommitted or untracked changes:"$'\n'"$dirty"
 
 # --- 5. descends from where the clone started ------------------------------------
-clone_git merge-base --is-ancestor "$BASE" "$TIP" 2>/dev/null ||
+priv_git merge-base --is-ancestor "$BASE" "$TIP" 2>/dev/null ||
   refuse "branch $BRANCH at $TIP does not descend from the commit its clone started from, $BASE"
 [ "$TIP" != "$BASE" ] || refuse "branch $BRANCH adds no commit to $BASE"
 
 # --- 6. protected paths ------------------------------------------------------------
-if ! touched=$(clone_git log -m --no-renames --name-only --format= "$BASE..$TIP" -- ':(icase).github' 2>/dev/null); then
+if ! touched=$(priv_git log -m --no-renames --name-only --format= "$BASE..$TIP" -- ':(icase).github' 2>/dev/null); then
   refuse "the branch's changed paths could not be read"
 fi
 touched=$(printf '%s\n' "$touched" | sed '/^$/d' | sort -u)
 [ -z "$touched" ] || refuse "the branch changes paths under .github/, which a contained worker never changes:"$'\n'"$touched"
 
 # --- 7. the push target ------------------------------------------------------------
-ORIGIN=$(clone_git config --get remote.origin.url 2>/dev/null) || ORIGIN=
+ORIGIN=
+if plain_file "$CLONE_GIT_DIR/config" 1048576 >"$PRIVATE/clone-config"; then
+  ORIGIN=$(priv_git config --no-includes --file "$PRIVATE/clone-config" --get remote.origin.url 2>/dev/null) || ORIGIN=
+fi
 PROJECT_ORIGIN=$(project_git config --get remote.origin.url 2>/dev/null) || PROJECT_ORIGIN=
 [ -n "$ORIGIN" ] && [ "$ORIGIN" = "$PROJECT_ORIGIN" ] ||
   refuse "the clone's origin '${ORIGIN:-<none>}' is not its project clone's origin '${PROJECT_ORIGIN:-<none>}'"
 slug=
-case "$ORIGIN" in
-  https://github.com/*) slug=${ORIGIN#https://github.com/} ;;
-  git@github.com:*) slug=${ORIGIN#git@github.com:} ;;
-  ssh://git@github.com/*) slug=${ORIGIN#ssh://git@github.com/} ;;
+case "$PROJECT_ORIGIN" in
+  https://github.com/*) slug=${PROJECT_ORIGIN#https://github.com/} ;;
+  git@github.com:*) slug=${PROJECT_ORIGIN#git@github.com:} ;;
+  ssh://git@github.com/*) slug=${PROJECT_ORIGIN#ssh://git@github.com/} ;;
 esac
 slug=${slug%/}
 slug=${slug%.git}
@@ -257,7 +323,7 @@ case "$slug" in
   */*/*|''|/*|*/) slug= ;;
   *[!A-Za-z0-9._/-]*) slug= ;;
 esac
-[ -n "$slug" ] || refuse "origin '$ORIGIN' does not name a github.com repository, the only forge host delivery opens PRs on"
+[ -n "$slug" ] || refuse "origin '$PROJECT_ORIGIN' does not name a github.com repository, the only forge host delivery opens PRs on"
 SLUG=$slug
 
 # --- 8. the worker's evidence --------------------------------------------------------
@@ -313,24 +379,38 @@ gh_axi() {  # <args...>
 }
 
 # The host's own git config applies to the push alone, for its credentials.
-if ! push_out=$(cd "$PRIVATE" && fm_run_timed 300 env -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
-  -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
-  GIT_DIR="$CLONE_GIT_DIR" GIT_COMMON_DIR="$CLONE_GIT_DIR" GIT_WORK_TREE="$CLONE_DIR" \
-  GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null GIT_TERMINAL_PROMPT=0 \
-  git -C "$WT" -c core.fsmonitor=false -c core.hooksPath=/dev/null \
-  push --no-verify --recurse-submodules=no --porcelain origin "$TIP:refs/heads/$BRANCH" 2>&1); then
+if ! push_out=$(cd "$PRIVATE" && fm_run_timed 300 "${PRIV_ENV[@]}" \
+  git push --no-verify --recurse-submodules=no --porcelain "$PROJECT_ORIGIN" "$TIP:refs/heads/$BRANCH" 2>&1); then
   die "the push of $TIP to $BRANCH on origin failed; nothing was force-pushed:"$'\n'"$push_out"
 fi
 
+# Record what was pushed in the host-owned task record, under its meta lock,
+# for the Definition-of-done gate on the PR report.
+META_LOCK=$(fm_meta_lock_path "$META") || die "pushed $TIP to $BRANCH, but its task record has no lock path"
+fm_lock_acquire_wait "$META_LOCK" || { META_LOCK=; die "pushed $TIP to $BRANCH, but could not lock its task record"; }
+state_device=$(fm_pr_file_device "$STATE") || die "pushed $TIP to $BRANCH, but could not read $STATE"
+[ -f "$META" ] && [ ! -L "$META" ] && [ "$(fm_pr_file_link_count "$META")" = 1 ] &&
+  [ "$(fm_pr_file_device "$META")" = "$state_device" ] || die "pushed $TIP to $BRANCH, but its task record is unavailable"
+[ "$(meta_value spawn_gen)" = "$SPAWN_GEN" ] || die "pushed $TIP to $BRANCH, but its task record changed meanwhile"
+META_TMP=$(mktemp "$STATE/.fm-deliver-meta.XXXXXX") || die "pushed $TIP to $BRANCH, but could not rewrite its task record"
+if ! { grep -v '^delivered_head=' "$META" || true; printf 'delivered_head=%s\n' "$TIP"; } >"$META_TMP" ||
+  ! chmod 0600 "$META_TMP" || ! fm_pr_private_file_valid "$META_TMP" 600 "$state_device" ||
+  ! fm_pr_regular_destination_on_device_or_absent "$META" "$state_device" || ! mv -f -- "$META_TMP" "$META"; then
+  die "pushed $TIP to $BRANCH, but could not record delivered_head= in its task record"
+fi
+META_TMP=
+fm_lock_release "$META_LOCK" || true
+META_LOCK=
+
 {
   printf '## Commits\n\n'
-  clone_git log --reverse --format='- %h %s' "$BASE..$TIP"
+  priv_git log --reverse --format='- %h %s' "$BASE..$TIP"
   printf '\n## Evidence from the contained worker\n\n'
   tail -n +2 "$PRIVATE/evidence"
   printf '\n---\n'
   printf 'Built, checked, and committed inside its task container, which holds no forge credentials; Firstmate pushed %s and opened this PR from the host without running project code there.\n' "$TIP"
 } >"$PRIVATE/body.md" || die "could not write the PR body"
-title=$(clone_git log --reverse --format=%s "$BASE..$TIP" | head -n 1)
+title=$(priv_git log --reverse --format=%s "$BASE..$TIP" | head -n 1)
 [ -n "$title" ] || title=$BRANCH
 
 if ! list_out=$(gh_axi pr list --repo "$SLUG" --state open --head "$BRANCH" --limit 1 --fields url); then

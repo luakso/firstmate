@@ -185,16 +185,24 @@ test_container_direct_pr_handoff_is_checked_in_its_task_clone() {
   rc=0
   reason=$(accept_done ship direct-PR "$clone" "$repo" "done [at=2]: PR https://github.com/o/r/pull/9" "$state" tc-ctr "$meta") || rc=$?
   [ "$rc" -eq 1 ] || fail "a contained ship's PR report was accepted before host delivery pushed its head"
-  assert_contains "$reason" "unreachable outside the worker copy" "the unpushed PR report was refused for the wrong reason"
+  assert_contains "$reason" "not the head host delivery pushed" "the unpushed PR report was refused for the wrong reason"
   git -C "$clone" update-ref refs/remotes/origin/fm/tc-ctr HEAD
+  rc=0
+  accept_done ship direct-PR "$clone" "$repo" "done [at=2]: PR https://github.com/o/r/pull/9" "$state" tc-ctr "$meta" >/dev/null || rc=$?
+  [ "$rc" -eq 1 ] || fail "a remote-tracking ref the worker wrote passed for host delivery's push"
+  printf 'delivered_head=%s\n' "$(git -C "$clone" rev-parse HEAD)" >> "$meta"
   accept_done ship direct-PR "$clone" "$repo" "done [at=2]: PR https://github.com/o/r/pull/9" "$state" tc-ctr "$meta" \
-    || fail "a contained ship's PR report was refused after host delivery pushed its head"
+    || fail "a contained ship's PR report was refused after host delivery recorded its head"
+  git -C "$clone" commit -q --allow-empty -m 'committed after delivery'
+  rc=0
+  accept_done ship direct-PR "$clone" "$repo" "done [at=3]: PR https://github.com/o/r/pull/9" "$state" tc-ctr "$meta" >/dev/null || rc=$?
+  [ "$rc" -eq 1 ] || fail "a contained ship's PR report was accepted for a head host delivery never pushed"
   git -C "$clone" checkout -q -b elsewhere
   rc=0
   reason=$(accept_done ship direct-PR "$clone" "$repo" "$handoff" "$state" tc-ctr "$meta") || rc=$?
   [ "$rc" -eq 1 ] || fail "a handoff whose HEAD is not the recorded branch was accepted"
   assert_contains "$reason" "not the tip of the task's recorded branch" "the off-branch handoff was refused for the wrong reason"
-  pass "a contained direct-PR handoff is checked in its task clone, and its PR report only once the head is pushed"
+  pass "a contained direct-PR handoff is checked in its task clone, and its PR report only on the head host delivery recorded"
 }
 
 test_free_text_sha_is_not_the_named_head() {

@@ -22,7 +22,8 @@
 # not gated; only the later CI-ready `done: PR <url> checks green` is, or on a
 # Gerrit project the later `done: PR <change url> published for review`. A
 # contained direct-PR ship's ready-branch done is the host-delivery handoff,
-# checked in its task clone instead (fm_dod_container_handoff). The
+# checked in its task clone instead, and its PR report passes only on the head
+# host delivery recorded (fm_dod_container_ship). The
 # named head is the worker copy's HEAD, except that a done naming the task's
 # recorded pr= passes when the forge holds that head: a forge-reported
 # pr_head= in no-mistakes mode, or a recorded merge
@@ -720,7 +721,7 @@ fm_dod_named_head_reachable_outside_worktree() {  # <worktree> <project> <mode> 
 # pr_head=, and the merge-notified marker; <meta> may be a captured copy
 # (bin/fm-fleet-snapshot.sh), so the marker is read from <state>.
 fm_dod_accept_ship_done() {  # <kind> <mode> <worktree> <project> <line> [<state> <id> <meta>]
-  local kind=$1 mode=$2 wt=$3 project=$4 line=$5 state=${6:-} id=${7:-} meta=${8:-} url sha gerrit
+  local kind=$1 mode=$2 wt=$3 project=$4 line=$5 state=${6:-} id=${7:-} meta=${8:-} url sha gerrit delivered
   fm_dod_should_gate_ship_done "$kind" "$mode" "$line" || return 0
   if url=$(fm_dod_pr_url_from_done_note "$(status_line_note "$line")") \
     && fm_dod_recorded_pr_on_forge "$state" "$id" "$meta" "$mode" "$url"; then
@@ -755,7 +756,15 @@ fm_dod_accept_ship_done() {  # <kind> <mode> <worktree> <project> <line> [<state
     printf '%s\n' "named head $sha is not the published content of $url: the change's current patch set does not carry this copy's HEAD tree, or it could not be read"
     return 1
   fi
-  if fm_dod_container_handoff "$mode" "$meta" "$line"; then
+  if fm_dod_container_ship "$mode" "$meta"; then
+    if [ -n "$url" ]; then
+      delivered=$(fm_dod_meta_value "$meta" delivered_head)
+      if fm_pr_head_valid "$delivered" && [ "$sha" = "$delivered" ]; then
+        return 0
+      fi
+      printf '%s\n' "named head $sha is not the head host delivery pushed (delivered_head=${delivered:-none} in the task record)"
+      return 1
+    fi
     if fm_task_clone_shaped "$wt" && [ "$(git -C "$wt" symbolic-ref --quiet HEAD 2>/dev/null)" = "refs/heads/$(fm_dod_meta_value "$meta" branch)" ]; then
       return 0
     fi
@@ -769,14 +778,15 @@ fm_dod_accept_ship_done() {  # <kind> <mode> <worktree> <project> <line> [<state
   return 1
 }
 
-# 0 when <line> is a contained direct-PR ship's ready-branch handoff: the task
-# record says runtime=container and the done: reports no PR. That worker cannot
-# reach the forge (bin/fm-container-deliver.sh publishes its branch from the
-# host), so its named head is checked as the tip of its recorded branch in its
-# own task clone, which teardown keeps until the work lands. The PR report the
-# delivery appends afterwards is gated like any other direct-PR done.
-fm_dod_container_handoff() {  # <mode> <meta> <line>
+# 0 when the task is a contained direct-PR ship: the task record says
+# runtime=container. That worker cannot reach the forge
+# (bin/fm-container-deliver.sh publishes its branch from the host), so a done:
+# that reports no PR is its ready-branch handoff, checked as the tip of its
+# recorded branch in its own task clone, which teardown keeps until the work
+# lands. Its refs are worker-writable, so the PR report the delivery appends
+# passes only while the clone's HEAD is the delivered_head= the delivery wrote
+# into the host-owned task record after its push.
+fm_dod_container_ship() {  # <mode> <meta>
   [ "$1" = direct-PR ] || return 1
-  [ -n "$2" ] && [ "$(fm_dod_meta_value "$2" runtime)" = container ] || return 1
-  ! fm_dod_pr_url_from_done_note "$(status_line_note "$3")" >/dev/null
+  [ -n "$2" ] && [ "$(fm_dod_meta_value "$2" runtime)" = container ]
 }

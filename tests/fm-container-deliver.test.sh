@@ -207,7 +207,7 @@ test_a_clean_branch_is_pushed_published_and_reported() {
   status=$?
   expect_code 0 "$status" "a clean branch should deliver"$'\n'"$out"
   assert_equals "$tip" "$(remote_branch)" "the remote branch is not the verified tip"
-  assert_equals "$tip" "$(git -C "$D_CLONE" rev-parse refs/remotes/origin/fm/t1)" "the clone's remote-tracking ref did not follow the push"
+  assert_equals "delivered_head=$tip" "$(grep '^delivered_head=' "$D_HOME/state/t1.meta")" "the task record does not name the pushed head"
   assert_grep "pr create --repo acme/widget --title Add the add function --body-file " "$D_LOG" "the PR was not opened on the project's repository with the commit subject"
   assert_grep "--base main --head fm/t1" "$D_LOG" "the PR does not target the default branch from the ship branch"
   assert_no_grep "pr ready" "$D_LOG" "a non-draft PR was marked ready"
@@ -256,6 +256,66 @@ test_a_redelivery_waits_for_the_pr_head_to_reach_the_pushed_commit() {
   assert_grep "api repos/acme/widget/pulls/5 --jq .head.sha" "$D_LOG" "the PR head was not read through gh-axi"
   assert_nothing_ran_on_the_host "stale PR head"
   pass "a redelivery trusts no checks until the PR head is the pushed commit, so an old head's failed rollup is never reported"
+}
+
+# Worker-written git config naming sentinels and another bare repository.
+hostile_git_config() {
+  cat <<EOF
+[credential]
+	helper = !$D/credential-helper
+[filter "evil"]
+	clean = $D/clone-filter clean
+	smudge = $D/clone-filter smudge
+[core]
+	sshCommand = $D/ssh-command
+	fsmonitor = $D/clone-fsmonitor
+[remote "origin"]
+	pushurl = file://$D/attacker.git
+[url "file://$D/attacker.git"]
+	pushInsteadOf = https://github.com/
+EOF
+}
+
+assert_worker_git_config_was_ignored() {  # <tip> <label>
+  local out status tip=$1 label=$2
+  out=$(deliver --ci-wait 0)
+  status=$?
+  expect_code 0 "$status" "$label: the delivery should succeed"$'\n'"$out"
+  assert_equals "$tip" "$(remote_branch)" "$label: the push did not reach the project's origin"
+  assert_equals '' "$(git -C "$D/attacker.git" rev-parse --verify --quiet refs/heads/fm/t1 || true)" "$label: the push reached the worker-named repository"
+  assert_nothing_ran_on_the_host "$label"
+}
+
+plant_sentinels() {
+  local tool
+  for tool in credential-helper clone-filter ssh-command clone-fsmonitor; do
+    make_sentinel "$D/$tool" "$D_EXEC"
+  done
+  git init -q --bare "$D/attacker.git"
+}
+
+test_worker_written_git_config_never_runs_or_redirects_on_the_host() {
+  local tip
+  make_world local-config
+  plant_sentinels
+  tip=$(git -C "$D_CLONE" rev-parse HEAD)
+  hostile_git_config >> "$D_CLONE/.git/config"
+  : > "$D_EXEC"
+  assert_worker_git_config_was_ignored "$tip" "the clone's own config"
+
+  make_world swapped-gitdir
+  plant_sentinels
+  tip=$(git -C "$D_CLONE" rev-parse HEAD)
+  mv "$D_CLONE/.git" "$D/gitdir-before-swap"
+  cp -R "$D/gitdir-before-swap" "$D_CLONE/.git"
+  {
+    printf '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\thooksPath = %s\n' "$D/projhooks"
+    printf '[remote "origin"]\n\turl = %s\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n' "$URL"
+    hostile_git_config
+  } > "$D_CLONE/.git/config"
+  : > "$D_EXEC"
+  assert_worker_git_config_was_ignored "$tip" "a swapped .git directory"
+  pass "a credential helper, filter, ssh command, fsmonitor, pushurl, or pushInsteadOf the worker writes never runs on the host or redirects the push"
 }
 
 test_ci_outcomes_are_reported_without_an_agent() {
@@ -364,6 +424,11 @@ test_each_unverifiable_branch_is_refused() {
   printf '%s\n' "$D/foreign/repo.git" > "$D_CLONE/.git/commondir"
   expect_refusal "a commondir pointing at another repository" "holds a commondir file"
 
+  make_world object-symlink
+  printf 'secret\n' > "$D/host-secret"
+  ln -s "$D/host-secret" "$D_CLONE/.git/objects/zz"
+  expect_refusal "a symlink in the clone's object store" "objects/zz, which is not a regular file or directory"
+
   make_world origin
   git -C "$D_CLONE" remote set-url origin https://github.com/attacker/widget.git
   expect_refusal "a different origin" "is not its project clone's origin"
@@ -417,6 +482,7 @@ test_a_diverged_remote_branch_is_never_overwritten() {
 test_a_clean_branch_is_pushed_published_and_reported
 test_a_redelivery_reuses_the_open_pr_and_a_draft_is_marked_ready
 test_a_redelivery_waits_for_the_pr_head_to_reach_the_pushed_commit
+test_worker_written_git_config_never_runs_or_redirects_on_the_host
 test_ci_outcomes_are_reported_without_an_agent
 test_each_unverifiable_branch_is_refused
 test_a_diverged_remote_branch_is_never_overwritten
