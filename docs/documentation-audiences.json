@@ -545,6 +545,14 @@
       "audience": "public-product"
     },
     {
+      "path": "tests/captures/claude-2.1.296/README.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "tests/captures/claude-2.1.296/slash-exit-menu.txt",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "tests/captures/no-mistakes-v1.70.1/README.md",
       "audience": "maintainer-verification"
     },
