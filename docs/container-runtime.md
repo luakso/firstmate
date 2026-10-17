@@ -96,6 +96,7 @@ With `--network none` and no mounted socket but the proxy's, a container whose p
 - Firstmate's AI-trailer `commit-msg` strip runs from the host and does not reach inside; Claude's attribution-off settings still ride the launch.
 - The task clone's remotes are the project clone's, but the container cannot reach them, and git commands that rewrite the clone's `.git/config`, such as `git config`, `git remote add`, or setting an upstream, fail inside the container.
 - After a container's first launch its home belongs to the worker, so a relaunch reuses it untouched rather than reading or rewriting anything in it; a worker that removes its own trust or onboarding record meets that dialog on its next relaunch.
+- Each container launch rewrites the clone's `.claude/settings.local.json` hooks from the host, which the worker could redirect with a symlink, so a launch refuses, writing nothing, when `.claude` is a symlink or not a directory you own, or when `settings.local.json` exists and is a symlink or not a regular file you own.
 - Firstmate and the captain still read what a contained worker writes into `data/<id>` and `state/<id>.inbox`, so those stay untrusted input, as they are for every worker.
 
 ## Live verification
