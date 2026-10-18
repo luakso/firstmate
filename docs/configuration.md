@@ -959,6 +959,16 @@ A missing file, a symlink, a file owned by someone else, any group or other perm
 The token reaches Podman only through a private `0600` env file that the launch removes when the container exits, never on a command line or in a task record.
 The agent inside the container can read it from its own environment, so the captain scopes it to this purpose and rotates it.
 
+### Session archive
+
+A contained worker's Claude writes its session transcripts into the container home beside its task clone, which cleanup removes with the task directory, so before that removal teardown copies them into a host-only archive.
+The archive lives at `~/.firstmate/session-archive/<home-tag>/<id>/projects/`, keyed by the same `<home-tag>` and `<id>` as the [task clone](#the-task-clone) (with `FM_TASK_CLONE_ROOT` set, that directory's own name stands in for `<home-tag>`), outside every home, project, clone, and repository; the `FM_SESSION_ARCHIVE_ROOT` environment variable replaces `~/.firstmate/session-archive`.
+It holds every regular `*.jsonl` file under the worker's `CLAUDE_CONFIG_DIR/projects/`, the session transcripts and their subagent transcripts, at the same relative path, in directories mode `700` and files mode `600`.
+The container home is worker-written, so it is read as data: symlinks are never followed or copied, a symlinked directory on the way to `projects/` archives nothing, and only regular files are copied.
+A transcript that cannot be archived refuses the removal, so teardown fails with the task directory and its transcripts kept; fix the cause and run teardown again.
+Firstmate never reads, prunes, or ships the archive; it is the captain's to read or remove.
+Tasks outside the container are unaffected, because their transcripts already live in the captain's own Claude config.
+
 ### Refusals and relaunch
 
 With a project file present, a spawn of that project also refuses, before anything exists, when any of these holds:
@@ -2510,6 +2520,7 @@ FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT=     # optional seconds allowed for bootstrap's 
 FM_FLEET_PRUNE=1        # set to 0 to skip pruning local branches whose upstream is gone
 FM_STALE_WORKTREE_LOCK_AGE_SECS=30       # min mtime age before fm-teardown.sh treats a leftover worktree git index.lock as provably stale
 FM_TASK_CLONE_ROOT=     # optional absolute directory holding sandboxed Claude tasks' own clones as <id>/<repo>; unset uses ~/.firstmate/clones/<home-tag> ("The task clone" above)
+FM_SESSION_ARCHIVE_ROOT=   # optional absolute directory replacing ~/.firstmate/session-archive, where teardown keeps contained workers' session transcripts as <home-tag>/<id>/projects/ ("Session archive" above)
 FM_TREEHOUSE_RETURN_LOCK_RETRIES=3        # retries after a treehouse return fails on the transient git index.lock signature
 FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS=1 # seconds fm-teardown.sh waits before each retry after that signature
 FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=   # legacy alias for FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS when the new variable is unset

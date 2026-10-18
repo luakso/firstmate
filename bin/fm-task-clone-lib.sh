@@ -193,19 +193,108 @@ fm_task_clone_owned() {  # <worktree> <task-id> <home> [container]
 }
 
 # Remove the task directory holding <task-id>'s clone, after proving ownership.
-# Go module trees and git objects can be read-only, so write permission is
-# restored first.
+# A contained task's session transcripts are archived first (CONTAINED
+# TRANSCRIPTS below), and a failed archive keeps the whole directory. Go module
+# trees and git objects can be read-only, so write permission is restored
+# first.
 fm_task_clone_remove() {  # <worktree> <task-id> <home> [container]
   fm_task_clone_owned "$1" "$2" "$3" "${4:-}" || {
     echo "error: $1 is not a task clone this home made for $2; refusing to remove it" >&2
     return 1
   }
+  if [ "${4:-}" = container ] && ! fm_task_clone_archive_transcripts "$FM_TASK_CLONE_DIR" "$2"; then
+    echo "error: keeping task directory $FM_TASK_CLONE_DIR so $2's session transcripts are not lost" >&2
+    return 1
+  fi
   chmod -R u+w -- "$FM_TASK_CLONE_DIR" 2>/dev/null || true
   rm -rf -- "$FM_TASK_CLONE_DIR"
   [ ! -e "$FM_TASK_CLONE_DIR" ] || {
     echo "error: could not remove task clone directory $FM_TASK_CLONE_DIR" >&2
     return 1
   }
+}
+
+# CONTAINED TRANSCRIPTS. A contained worker's Claude writes its session
+# transcripts into the container home beside its clone (<task-dir>/container/
+# home/.claude is its CLAUDE_CONFIG_DIR; bin/fm-spawn.sh makes it and
+# bin/fm-container-lib.sh mounts it), where they would vanish with the task
+# directory. So before that removal every regular *.jsonl file under its
+# projects/ directory - the session transcripts and their subagent
+# transcripts - is copied, at the same relative path, into the host-only
+# archive <archive-root>/<home-tag>/<task-id>/projects/, where <archive-root>
+# is $FM_SESSION_ARCHIVE_ROOT or $HOME/.firstmate/session-archive and
+# <home-tag> is the name of the clone root the task directory sits in, so the
+# archive is keyed exactly as the task directory was. Its directories are mode
+# 0700 and its files 0600. The home is worker-written, so it is read as data
+# only: a symlinked directory on the way to projects/ archives nothing, only
+# regular files are copied and never through a symlink, and nothing in it runs.
+
+# Print the session archive root.
+fm_task_clone_archive_root() {
+  if [ -n "${FM_SESSION_ARCHIVE_ROOT:-}" ]; then
+    case "$FM_SESSION_ARCHIVE_ROOT" in
+      /*) printf '%s\n' "$FM_SESSION_ARCHIVE_ROOT" ;;
+      *) echo "error: FM_SESSION_ARCHIVE_ROOT '$FM_SESSION_ARCHIVE_ROOT' must be an absolute path" >&2; return 1 ;;
+    esac
+    return 0
+  fi
+  [ -n "${HOME:-}" ] || { echo "error: HOME is not set, so the session archive root cannot be resolved" >&2; return 1; }
+  printf '%s/.firstmate/session-archive\n' "$HOME"
+}
+
+# Copy the session transcripts in <task-dir>'s container home into the
+# archive. Succeeds having copied nothing when there is no transcript; fails,
+# naming why, when one could not be archived, so the caller keeps the task
+# directory. Callers source bin/fm-timeout-lib.sh.
+fm_task_clone_archive_transcripts() {  # <task-dir> <task-id>
+  local dir=$1 id=$2 projects path root tag dest list src target rc=0
+  projects="$dir/container/home/.claude/projects"
+  for path in "$dir/container" "$dir/container/home" "$dir/container/home/.claude" "$projects"; do
+    if [ -L "$path" ]; then
+      echo "warning: $path is a symlink, so task $id's container home is not followed and none of its transcripts is archived" >&2
+      return 0
+    fi
+    [ -d "$path" ] || return 0
+  done
+  root=$(fm_task_clone_archive_root) || return 1
+  fm_dirname_to tag "$dir"
+  fm_basename_to tag "$tag"
+  dest="$root/$tag/$id"
+  chmod -R u+rwX -- "$projects" 2>/dev/null || true
+  list=$(mktemp "${TMPDIR:-/tmp}/fm-transcripts.XXXXXX") || {
+    echo "error: could not list task $id's session transcripts" >&2
+    return 1
+  }
+  if ! fm_run_timed 120 find "$projects" -type f -name '*.jsonl' -print0 >"$list"; then
+    rm -f -- "$list"
+    echo "error: could not list task $id's session transcripts under $projects" >&2
+    return 1
+  fi
+  while IFS= read -r -d '' src; do
+    [ -f "$src" ] && [ ! -L "$src" ] || continue
+    target="$dest/projects/${src#"$projects/"}"
+    if ! (umask 077 && mkdir -p -- "${target%/*}") ||
+      ! fm_run_timed 300 cp -P -- "$src" "$target"; then
+      echo "error: could not archive task $id's session transcript $src to $target" >&2
+      rc=1
+      break
+    fi
+    if [ -L "$target" ] || [ ! -f "$target" ]; then
+      rm -f -- "$target"
+    elif ! chmod 600 -- "$target"; then
+      echo "error: could not make the archived transcript $target private" >&2
+      rc=1
+      break
+    fi
+  done <"$list"
+  rm -f -- "$list"
+  [ "$rc" -eq 0 ] || return 1
+  [ -d "$dest" ] || return 0
+  if ! chmod 700 -- "$root" "$root/$tag" ||
+    ! find "$dest" -type d -exec chmod 700 {} +; then
+    echo "error: could not make the session archive $dest private" >&2
+    return 1
+  fi
 }
 
 # CONTAINED CLONES. A contained worker (bin/fm-container-lib.sh) can rewrite

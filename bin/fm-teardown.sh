@@ -96,7 +96,9 @@
 # local-only comparison reads the project's local default by commit, since the
 # clone has no such branch of its own. It is proved this task's by the marker
 # bin/fm-task-clone-lib.sh owns, refused before anything runs when that proof
-# fails, and removed whole instead of returned to a pool.
+# fails, and removed whole instead of returned to a pool. A contained task's
+# session transcripts are archived before that removal, which refuses when they
+# cannot be (bin/fm-task-clone-lib.sh "CONTAINED TRANSCRIPTS").
 # Worktree-slot ownership (teardown-slot-collision): a treehouse pool slot is
 # reused across tasks, so a stale, duplicated, or drifted worktree= record can
 # name a slot a DIFFERENT live task now holds. Cleanup kills every process under
