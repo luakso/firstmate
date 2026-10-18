@@ -1,0 +1,103 @@
+===== S1: clone started, an earlier PR merged on main, worker REBASED onto main (tokenbook #25/#26 shape)
+warning: Empty last update token.
+--- [S1 :: BASE c77f6d9^ (old)] exit=0
+PR title  : Check protected-path coverage, name gate checks, skip the Stop gate on a passed tree
+PR body commits:
+    - 134f387 Check protected-path coverage, name gate checks, skip the Stop gate on a passed tree
+    - e8c689f Add the add function
+    - 05e7d81 Test the add function
+--- [S1 :: TARGET c77f6d9 (new)] exit=0
+PR title  : Add the add function
+PR body commits:
+    - e8c689f Add the add function
+    - 05e7d81 Test the add function
+
+===== S2: worker MERGED main into the branch (merge commit) instead of rebasing
+warning: Empty last update token.
+warning: Empty last update token.
+--- [S2 :: BASE c77f6d9^ (old)] exit=0
+PR title  : Earlier PR A already on main
+PR body commits:
+    - 7b6b1bb Earlier PR A already on main
+    - b91f3f8 Earlier PR B already on main
+    - 067795b Add the add function
+    - e6176b6 Merge main into fm/t1
+    - 94759a9 Test the add function
+--- [S2 :: TARGET c77f6d9 (new)] exit=0
+PR title  : Add the add function
+PR body commits:
+    - 067795b Add the add function
+    - e6176b6 Merge main into fm/t1
+    - 94759a9 Test the add function
+
+===== S3: plain branch, main never moved (regression: title = first own commit, all own commits listed)
+--- [S3 :: BASE c77f6d9^ (old)] exit=0
+PR title  : Add the add function
+PR body commits:
+    - 4e3211b Add the add function
+    - a7e6be3 Test the add function
+    - 6bb06f2 Document the add function
+--- [S3 :: TARGET c77f6d9 (new)] exit=0
+PR title  : Add the add function
+PR body commits:
+    - 4e3211b Add the add function
+    - a7e6be3 Test the add function
+    - 6bb06f2 Document the add function
+
+===== S4: main moved AGAIN after the worker took it in (project fetched the newer main)
+warning: Empty last update token.
+warning: Empty last update token.
+--- [S4 :: BASE c77f6d9^ (old)] exit=0
+PR title  : Earlier PR A already on main
+PR body commits:
+    - 53ddf10 Earlier PR A already on main
+    - 11bec3c Add the add function
+    - 72060c8 Test the add function
+--- [S4 :: TARGET c77f6d9 (new)] exit=0
+PR title  : Add the add function
+PR body commits:
+    - 11bec3c Add the add function
+    - 72060c8 Test the add function
+
+===== S5: redelivery to the branch's OPEN PR after taking in main (body refresh path)
+warning: Empty last update token.
+--- [S5 :: BASE c77f6d9^ (old)] exit=0
+PR title  : <no pr create; refreshed open PR via: pr edit 26 --repo acme/widget>
+PR body commits:
+    - 53ddf10 Earlier PR A already on main
+    - 56ef02f Add the add function
+    - 5aef0a1 Test the add function
+--- [S5 :: TARGET c77f6d9 (new)] exit=0
+PR title  : <no pr create; refreshed open PR via: pr edit 26 --repo acme/widget>
+PR body commits:
+    - 56ef02f Add the add function
+    - 5aef0a1 Test the add function
+
+===== S6 (adversarial): project clone has no fetched origin/<default> ref -> falls back to clone_base range, still delivers
+warning: Empty last update token.
+--- [S6 :: TARGET (new), origin/main ref removed] exit=0
+PR title  : Earlier PR A already on main
+PR body commits:
+    - 4698491 Earlier PR A already on main
+    - 3035da7 Add the add function
+    - a536e74 Test the add function
+
+===== S7 (adversarial): project's origin/main is STALE (fetched before the earlier PR merged) -> no crash, clone_base still excludes nothing extra
+--- [S7 :: TARGET (new), project origin/main stale] exit=0
+PR title  : Earlier PR A (project clone never fetched it)
+PR body commits:
+    - c46e194 Earlier PR A (project clone never fetched it)
+    - 2cecee0 Add the add function
+    - 33d43e8 Test the add function
+
+===== S8 (adversarial): the worker's first commit already landed on main via a merge; worker adds one more and redelivers
+warning: Empty last update token.
+--- [S8 :: BASE c77f6d9^ (old)] exit=0
+PR title  : Add the add function
+PR body commits:
+    - 9ff8336 Add the add function
+    - 6332087 Follow-up: handle overflow in add
+--- [S8 :: TARGET c77f6d9 (new)] exit=0
+PR title  : Follow-up: handle overflow in add
+PR body commits:
+    - 6332087 Follow-up: handle overflow in add
