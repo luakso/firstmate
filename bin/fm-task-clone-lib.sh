@@ -221,23 +221,16 @@ fm_task_clone_remove() {  # <worktree> <task-id> <home> [container]
 # directory. So before that removal every regular *.jsonl file under its
 # projects/ directory - the session transcripts and their subagent
 # transcripts - is copied, at the same relative path, into the host-only
-# archive <archive-root>/<home-tag>/<task-id>/projects/, where <archive-root>
-# is $FM_SESSION_ARCHIVE_ROOT or $HOME/.firstmate/session-archive and
-# <home-tag> is the name of the clone root the task directory sits in, so the
-# archive is keyed exactly as the task directory was. Its directories are mode
-# 0700 and its files 0600. The home is worker-written, so it is read as data
-# only: a symlinked directory on the way to projects/ archives nothing, only
-# regular files are copied and never through a symlink, and nothing in it runs.
+# archive $HOME/.firstmate/session-archive/<home-tag>/<task-id>/projects/,
+# where <home-tag> is the name of the clone root the task directory sits in,
+# so the archive is keyed exactly as the task directory was. Its directories
+# are mode 0700 and its files 0600. The home is worker-written, so it is read
+# as data only: a symlinked directory on the way to projects/ archives nothing,
+# only regular files are copied and never through a symlink, and nothing in it
+# runs.
 
 # Print the session archive root.
 fm_task_clone_archive_root() {
-  if [ -n "${FM_SESSION_ARCHIVE_ROOT:-}" ]; then
-    case "$FM_SESSION_ARCHIVE_ROOT" in
-      /*) printf '%s\n' "$FM_SESSION_ARCHIVE_ROOT" ;;
-      *) echo "error: FM_SESSION_ARCHIVE_ROOT '$FM_SESSION_ARCHIVE_ROOT' must be an absolute path" >&2; return 1 ;;
-    esac
-    return 0
-  fi
   [ -n "${HOME:-}" ] || { echo "error: HOME is not set, so the session archive root cannot be resolved" >&2; return 1; }
   printf '%s/.firstmate/session-archive\n' "$HOME"
 }

@@ -254,7 +254,7 @@ clone_commit() {
 
 run_clone_teardown() {
   local case_dir=$1; shift
-  FM_HOME="$case_dir/home" FM_SESSION_ARCHIVE_ROOT="${FM_SESSION_ARCHIVE_ROOT:-$case_dir/session-archive}" \
+  HOME="$case_dir/host-home" FM_HOME="$case_dir/home" \
     run_teardown "$case_dir" "$@"
 }
 
@@ -1063,7 +1063,7 @@ test_container_task_teardown_archives_its_transcripts() {
   set -e
   expect_code 0 "$rc" "container-transcripts: a container scout should be torn down"$'\n'"$(cat "$case_dir/stderr")"
   assert_absent "$case_dir/clones/task-x1" "container-transcripts: teardown left the container task's directory behind"
-  archive="$case_dir/session-archive/clones/task-x1/projects/-work-project"
+  archive="$case_dir/host-home/.firstmate/session-archive/clones/task-x1/projects/-work-project"
   [ "$(cat "$archive/session-1.jsonl" 2>/dev/null)" = '{"type":"assistant"}' ] \
     || fail "container-transcripts: the session transcript was not archived"
   [ "$(cat "$archive/session-1/subagents/agent-a.jsonl" 2>/dev/null)" = '{"type":"assistant","sub":true}' ] \
@@ -1073,7 +1073,7 @@ test_container_task_teardown_archives_its_transcripts() {
   assert_absent "$archive/session-1/notes.txt" "container-transcripts: a non-transcript file was archived"
   [ "$(file_mode "$archive/session-1.jsonl")" = 600 ] || fail "container-transcripts: an archived transcript is not mode 600"
   [ "$(file_mode "$archive/session-1/subagents")" = 700 ] || fail "container-transcripts: an archive directory is not mode 700"
-  [ "$(file_mode "$case_dir/session-archive/clones")" = 700 ] || fail "container-transcripts: the home's archive directory is not mode 700"
+  [ "$(file_mode "$case_dir/host-home/.firstmate/session-archive/clones")" = 700 ] || fail "container-transcripts: the home's archive directory is not mode 700"
   [ "$(cat "$case_dir/outside/secret.jsonl")" = '{"secret":true}' ] || fail "container-transcripts: the symlink target outside the home changed"
   pass "a container task's teardown archives its regular session transcripts privately before removing its directory"
 }
@@ -1091,7 +1091,7 @@ test_container_task_teardown_does_not_follow_a_symlinked_projects_dir() {
   set -e
   expect_code 0 "$rc" "container-transcripts-symlink: teardown should proceed"$'\n'"$(cat "$case_dir/stderr")"
   assert_grep "is a symlink" "$case_dir/stderr" "container-transcripts-symlink: the skipped symlink was not reported"
-  assert_absent "$case_dir/session-archive" "container-transcripts-symlink: teardown archived through a symlink"
+  assert_absent "$case_dir/host-home/.firstmate/session-archive" "container-transcripts-symlink: teardown archived through a symlink"
   assert_present "$case_dir/outside/-captain/session.jsonl" "container-transcripts-symlink: teardown removed files outside the task directory"
   assert_absent "$case_dir/clones/task-x1" "container-transcripts-symlink: teardown left the task directory behind"
   pass "a container task's teardown never follows a symlinked transcript directory"
@@ -1101,10 +1101,10 @@ test_container_task_teardown_keeps_transcripts_it_cannot_archive() {
   local case_dir rc
   case_dir=$(make_container_scout_case container-transcripts-fail 0)
   seed_container_transcripts "$case_dir"
-  printf 'not a directory\n' > "$case_dir/archive-blocker"
+  mkdir -p "$case_dir/host-home/.firstmate"
+  printf 'not a directory\n' > "$case_dir/host-home/.firstmate/session-archive"
   set +e
-  FM_SESSION_ARCHIVE_ROOT="$case_dir/archive-blocker/root" \
-    run_clone_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  run_clone_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "container-transcripts-fail: teardown succeeded although the transcripts were not archived"
