@@ -1,0 +1,32 @@
+== scenario: symlink
+lab FM_HOME=/tmp/fm-lab.UQNRnA  host HOME=/tmp/fm-labhost.K7aZuG
+task clone: /tmp/fm-labhost.K7aZuG/.firstmate/clones/firstmate-20abd089/t1/demo
+--- container pane (inside the real container) ---
+PROBE-READY whoami=1000 HOME=/tmp/fm-labhost.K7aZuG/.firstmate/clones/firstmate-20abd089/t1/container/home CLAUDE_CONFIG_DIR=/tmp/fm-labhost.K7aZuG/.firstmate/clones/firstmate-20abd089/t1/container/ho
+me/.claude
+ls: cannot access '/tmp/fm-labhost.K7aZuG/.firstmate/clones/firstmate-20abd089/t1/container/home/.claude/projects/': No such file or directory
+--- podman ps before teardown ---
+fm-t1-170446091370 Up Less than a second
+$ HOME=/tmp/fm-labhost.K7aZuG FM_HOME=/tmp/fm-lab.UQNRnA bin/fm-teardown.sh t1
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.UQNRnA
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+teardown: reaping leaked worktree process group for t1: 2474750
+warning: /tmp/fm-labhost.K7aZuG/.firstmate/clones/firstmate-20abd089/t1/container/home/.claude/projects is a symlink, so task t1's container home is not followed and none of its transcripts is archived
+teardown t1 complete (window firstmate:fm-t1, worktree /tmp/fm-labhost.K7aZuG/.firstmate/clones/firstmate-20abd089/t1/demo)
+Backlog: t1 just finished (this home keeps no markdown backlog at /tmp/fm-lab.UQNRnA/data/backlog.md). Update /tmp/fm-lab.UQNRnA/data/backlog.md - move t1 to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+teardown exit=0
+--- podman ps -a after teardown (expect nothing) ---
+--- task directory exists? ---
+absent: /tmp/fm-labhost.K7aZuG/.firstmate/clones/firstmate-20abd089/t1
+--- archive tree (host HOME/.firstmate/session-archive) ---
+no archive created
+--- outside dir untouched ---
+{"captain-secret":true}
+--- real operator archive untouched? ---
+ls: cannot access '/home/picasso/.firstmate/session-archive': No such file or directory

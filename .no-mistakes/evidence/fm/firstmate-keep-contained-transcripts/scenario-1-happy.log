@@ -1,0 +1,67 @@
+== scenario: happy
+lab FM_HOME=/tmp/fm-lab.N2pnMX  host HOME=/tmp/fm-labhost.05XmyV
+task clone: /tmp/fm-labhost.05XmyV/.firstmate/clones/firstmate-20abd089/t1/demo
+--- container pane (inside the real container) ---
+PROBE-READY whoami=1000 HOME=/tmp/fm-labhost.05XmyV/.firstmate/clones/firstmate-20abd089/t1/container/home CLAUDE_CONFIG_DIR=/tmp/fm-labhost.05XmyV/.firstmate/clones/firstmate-20abd089/t1/container/ho
+me/.claude
+/tmp/fm-labhost.05XmyV/.firstmate/clones/firstmate-20abd089/t1/container/home/.claude/projects/:
+total 0
+drwxr-xr-x 3 node node 120 Oct 18 09:25 -tmp-fm-labhost-05XmyV--firstmate-clones-firstmate-20abd089-t1-demo
+drwxr-xr-x 3 node node  60 Oct 18 09:25 .
+drwxr-xr-x 3 node node  60 Oct 18 09:25 ..
+/tmp/fm-labhost.05XmyV/.firstmate/clones/firstmate-20abd089/t1/container/home/.claude/projects/-tmp-fm-labhost-05XmyV--firstmate-clones-firstmate-20abd089-t1-demo:
+total 4
+drwxr-xr-x 3 node node 120 Oct 18 09:25 .
+drwxr-xr-x 3 node node  60 Oct 18 09:25 ..
+drwxr-xr-x 3 node node  80 Oct 18 09:25 0f1e2d3c-sess
+-rw-r--r-- 1 node node 124 Oct 18 09:25 0f1e2d3c-sess.jsonl
+prw-r--r-- 1 node node   0 Oct 18 09:25 pipe.jsonl
+lrwxrwxrwx 1 node node  48 Oct 18 09:25 planted.jsonl -> /tmp/fm-lab.N2pnMX/outside/-captain/secret.jsonl
+/tmp/fm-labhost.05XmyV/.firstmate/clones/firstmate-20abd089/t1/container/home/.claude/projects/-tmp-fm-labhost-05XmyV--firstmate-clones-firstmate-20abd089-t1-demo/0f1e2d3c-sess:
+total 4
+drwxr-xr-x 3 node node  80 Oct 18 09:25 .
+drwxr-xr-x 3 node node 120 Oct 18 09:25 ..
+-rw-r--r-- 1 node node   6 Oct 18 09:25 notes.txt
+drwxr-xr-x 2 node node  60 Oct 18 09:25 subagents
+/tmp/fm-labhost.05XmyV/.firstmate/clones/firstmate-20abd089/t1/container/home/.claude/projects/-tmp-fm-labhost-05XmyV--firstmate-clones-firstmate-20abd089-t1-demo/0f1e2d3c-sess/subagents:
+total 4
+drwxr-xr-x 2 node node 60 Oct 18 09:25 .
+drwxr-xr-x 3 node node 80 Oct 18 09:25 ..
+-rw-r--r-- 1 node node 80 Oct 18 09:25 agent-a1.jsonl
+--- podman ps before teardown ---
+fm-t1-2f788938f6b5 Up 1 second
+$ HOME=/tmp/fm-labhost.05XmyV FM_HOME=/tmp/fm-lab.N2pnMX bin/fm-teardown.sh t1
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.N2pnMX
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+teardown: reaping leaked worktree process group for t1: 2471665
+teardown t1 complete (window firstmate:fm-t1, worktree /tmp/fm-labhost.05XmyV/.firstmate/clones/firstmate-20abd089/t1/demo)
+Backlog: t1 just finished (this home keeps no markdown backlog at /tmp/fm-lab.N2pnMX/data/backlog.md). Update /tmp/fm-lab.N2pnMX/data/backlog.md - move t1 to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+teardown exit=0
+--- podman ps -a after teardown (expect nothing) ---
+--- task directory exists? ---
+absent: /tmp/fm-labhost.05XmyV/.firstmate/clones/firstmate-20abd089/t1
+--- archive tree (host HOME/.firstmate/session-archive) ---
+drwx------ 700 d session-archive
+drwx------ 700 d session-archive/firstmate-20abd089
+drwx------ 700 d session-archive/firstmate-20abd089/t1
+drwx------ 700 d session-archive/firstmate-20abd089/t1/projects
+drwx------ 700 d session-archive/firstmate-20abd089/t1/projects/-tmp-fm-labhost-05XmyV--firstmate-clones-firstmate-20abd089-t1-demo
+drwx------ 700 d session-archive/firstmate-20abd089/t1/projects/-tmp-fm-labhost-05XmyV--firstmate-clones-firstmate-20abd089-t1-demo/0f1e2d3c-sess
+-rw------- 600 f session-archive/firstmate-20abd089/t1/projects/-tmp-fm-labhost-05XmyV--firstmate-clones-firstmate-20abd089-t1-demo/0f1e2d3c-sess.jsonl
+drwx------ 700 d session-archive/firstmate-20abd089/t1/projects/-tmp-fm-labhost-05XmyV--firstmate-clones-firstmate-20abd089-t1-demo/0f1e2d3c-sess/subagents
+-rw------- 600 f session-archive/firstmate-20abd089/t1/projects/-tmp-fm-labhost-05XmyV--firstmate-clones-firstmate-20abd089-t1-demo/0f1e2d3c-sess/subagents/agent-a1.jsonl
+## /tmp/fm-labhost.05XmyV/.firstmate/session-archive/firstmate-20abd089/t1/projects/-tmp-fm-labhost-05XmyV--firstmate-clones-firstmate-20abd089-t1-demo/0f1e2d3c-sess/subagents/agent-a1.jsonl
+{"type":"assistant","isSidechain":true,"message":{"usage":{"output_tokens":5}}}
+## /tmp/fm-labhost.05XmyV/.firstmate/session-archive/firstmate-20abd089/t1/projects/-tmp-fm-labhost-05XmyV--firstmate-clones-firstmate-20abd089-t1-demo/0f1e2d3c-sess.jsonl
+{"type":"user","sessionId":"0f1e2d3c-sess"}
+{"type":"assistant","message":{"usage":{"input_tokens":12,"output_tokens":34}}}
+--- outside dir untouched ---
+{"captain-secret":true}
+--- real operator archive untouched? ---
+ls: cannot access '/home/picasso/.firstmate/session-archive': No such file or directory
