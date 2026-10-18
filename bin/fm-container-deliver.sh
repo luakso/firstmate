@@ -68,7 +68,8 @@
 # remote branch that diverged is refused rather than overwritten, and records
 # that SHA as delivered_head= in the task record under its meta lock. It
 # refreshes the body of the branch's open PR, or opens one against the
-# project's default branch titled with the oldest new commit's subject, and
+# project's default branch titled with the subject of the oldest commit in
+# neither clone_base nor the fetched default branch, and
 # marks it ready if it opened as a draft. The PR body is the commit list plus the worker's evidence file, all
 # worker-written text. The task's control lock is held from the first check
 # through the PR, so teardown, relaunch, or a second delivery cannot
@@ -309,6 +310,15 @@ default_branch() {
   return 1
 }
 BASE_BRANCH=$(default_branch) || die "could not determine the project's default branch (origin/HEAD, main, or master)"
+# The PR's title and commit list name only the branch's own commits: those in
+# neither clone_base nor the project's fetched default branch, so a branch that
+# started before other PRs merged and then took in main lists none of theirs.
+# The checks above keep clone_base alone.
+OWN_RANGE=("$TIP" "^$BASE")
+upstream=$(project_git rev-parse --verify --quiet "refs/remotes/origin/$BASE_BRANCH^{commit}" 2>/dev/null) || upstream=
+if [ -n "$upstream" ] && own_base=$(priv_git merge-base "$upstream" "$TIP" 2>/dev/null); then
+  OWN_RANGE+=("^$own_base")
+fi
 
 pr_url_of() {  # <text>
   printf '%s\n' "$1" | grep -oE "https://github\.com/$SLUG/pull/[0-9]+" | head -n 1
@@ -345,13 +355,13 @@ META_LOCK=
 
 {
   printf '## Commits\n\n'
-  priv_git log --reverse --format='- %h %s' "$BASE..$TIP"
+  priv_git log --reverse --format='- %h %s' "${OWN_RANGE[@]}"
   printf '\n## Evidence from the contained worker\n\n'
   tail -n +2 "$PRIVATE/evidence"
   printf '\n---\n'
   printf 'Built, checked, and committed inside its task container, which holds no forge credentials; Firstmate pushed %s and opened this PR from the host without running project code there.\n' "$TIP"
 } >"$PRIVATE/body.md" || die "could not write the PR body"
-title=$(priv_git log --reverse --format=%s "$BASE..$TIP" | head -n 1)
+title=$(priv_git log --reverse --format=%s "${OWN_RANGE[@]}" | head -n 1)
 [ -n "$title" ] || title=$BRANCH
 
 if ! list_out=$(gh_axi pr list --repo "$SLUG" --state open --head "$BRANCH" --limit 1 --fields url); then
