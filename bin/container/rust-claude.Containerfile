@@ -1,7 +1,7 @@
 # Worker image for Firstmate's container runtime level (docs/container-runtime.md):
-# a pinned Rust toolchain, the cargo-deny, cargo-nextest, and cargo-machete
-# cargo tools, the lefthook and gitleaks guardrail tools, Claude Code, and git,
-# plus the small in-container contract bin/fm-container-lib.sh relies on
+# a pinned Rust toolchain, the cargo-deny, cargo-nextest, cargo-machete, and
+# cargo-mutants cargo tools, the lefthook and gitleaks guardrail tools, Claude
+# Code, and git, plus the small in-container contract bin/fm-container-lib.sh relies on
 # (/usr/bin/tini as PID 1, /bin/sh, socat for the loopback proxy bridge, tzdata
 # for the host zone the launch passes as TZ, and a world-writable /cargo for
 # the project's cargo cache volume).
@@ -20,13 +20,15 @@ ARG CLAUDE_CODE_VERSION
 ARG CARGO_DENY_VERSION
 ARG CARGO_NEXTEST_VERSION
 ARG CARGO_MACHETE_VERSION
+ARG CARGO_MUTANTS_VERSION
 ARG LEFTHOOK_VERSION
 ARG GITLEAKS_VERSION
 
 RUN test -n "$RUST_TOOLCHAIN" && test -n "$CLAUDE_CODE_VERSION" && test -n "$CARGO_DENY_VERSION" \
   && test -n "$CARGO_NEXTEST_VERSION" && test -n "$CARGO_MACHETE_VERSION" \
+  && test -n "$CARGO_MUTANTS_VERSION" \
   && test -n "$LEFTHOOK_VERSION" && test -n "$GITLEAKS_VERSION" \
-  || { echo "RUST_TOOLCHAIN, CLAUDE_CODE_VERSION, CARGO_DENY_VERSION, CARGO_NEXTEST_VERSION, CARGO_MACHETE_VERSION, LEFTHOOK_VERSION and GITLEAKS_VERSION are required build arguments" >&2; exit 1; }
+  || { echo "RUST_TOOLCHAIN, CLAUDE_CODE_VERSION, CARGO_DENY_VERSION, CARGO_NEXTEST_VERSION, CARGO_MACHETE_VERSION, CARGO_MUTANTS_VERSION, LEFTHOOK_VERSION and GITLEAKS_VERSION are required build arguments" >&2; exit 1; }
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -41,6 +43,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       --default-toolchain "$RUST_TOOLCHAIN" --component clippy --component rustfmt \
   && CARGO_HOME=/opt/cargo cargo install --locked --root /usr/local "cargo-deny@$CARGO_DENY_VERSION" \
     "cargo-nextest@$CARGO_NEXTEST_VERSION" "cargo-machete@$CARGO_MACHETE_VERSION" \
+    "cargo-mutants@$CARGO_MUTANTS_VERSION" \
   && rm -rf /opt/cargo/registry /opt/cargo/git \
   && chmod -R a+rX /opt/rustup /opt/cargo
 

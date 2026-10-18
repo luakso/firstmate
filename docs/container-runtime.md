@@ -23,7 +23,7 @@ Then run the live verification below before the first real task.
 
 ## Build the image
 
-The image definition is [`bin/container/rust-claude.Containerfile`](../bin/container/rust-claude.Containerfile): a pinned Rust toolchain with clippy and rustfmt, cargo-deny, cargo-nextest, cargo-machete, lefthook, gitleaks, Claude Code, git, and the small in-container contract the runtime relies on (`/usr/bin/tini` as PID 1, `/bin/sh`, `socat`, `tzdata`, and a writable `/cargo`).
+The image definition is [`bin/container/rust-claude.Containerfile`](../bin/container/rust-claude.Containerfile): a pinned Rust toolchain with clippy and rustfmt, cargo-deny, cargo-nextest, cargo-machete, cargo-mutants, lefthook, gitleaks, Claude Code, git, and the small in-container contract the runtime relies on (`/usr/bin/tini` as PID 1, `/bin/sh`, `socat`, `tzdata`, and a writable `/cargo`).
 It is generic and lives in Firstmate rather than in the project, so the agent a container holds can never edit the image that holds it, and one definition serves every Rust project.
 Every version is a required build argument, and the toolchain comes from the project's own `rust-toolchain.toml`, so the image and the project agree on it:
 
@@ -35,6 +35,7 @@ podman build \
   --build-arg CARGO_DENY_VERSION=0.18.4 \
   --build-arg CARGO_NEXTEST_VERSION=0.9.148 \
   --build-arg CARGO_MACHETE_VERSION=0.9.2 \
+  --build-arg CARGO_MUTANTS_VERSION=27.1.0 \
   --build-arg LEFTHOOK_VERSION=2.1.16 \
   --build-arg GITLEAKS_VERSION=8.30.1 \
   -t localhost/tokenbook-dev:latest \
