@@ -532,6 +532,32 @@ test_a_worker_written_title_never_becomes_a_flag() {
   pass "a worker-written PR title reaches gh-axi only as the title, never as a flag"
 }
 
+test_a_branch_that_took_in_main_is_titled_and_listed_by_its_own_commits() {
+  local out status
+  make_world took-in-main
+  # Another PR merges upstream after the clone started; the worker then
+  # rebases onto main, so clone_base..tip holds the merged commit too.
+  printf 'merged earlier\n' > "$D/seed/earlier.txt"
+  git -C "$D/seed" add earlier.txt
+  git -C "$D/seed" commit -q -m 'Merged from an earlier PR'
+  git -C "$D/seed" push -q "file://$D/remote.git" main
+  GIT_CONFIG_GLOBAL="$D/gitconfig" git -C "$D_PROJ" fetch -q origin
+  git -C "$D_CLONE" fetch -q "$D_PROJ" refs/remotes/origin/main
+  git -C "$D_CLONE" -c core.hooksPath=/dev/null rebase -q FETCH_HEAD || fail "the worker's branch did not rebase onto main"
+  git -C "$D_CLONE" -c core.hooksPath=/dev/null commit -q --allow-empty -m 'Test the add function'
+  : > "$D_EXEC"
+  write_evidence
+  out=$(deliver --ci-wait 0)
+  status=$?
+  expect_code 0 "$status" "a branch that took in main should deliver"$'\n'"$out"
+  assert_grep "pr create --repo acme/widget --title=Add the add function --body-file " "$D_LOG" \
+    "the PR is not titled after the branch's own first commit"
+  assert_grep "Add the add function" "$D_LOG.body" "the PR body lost the branch's first commit"
+  assert_grep "Test the add function" "$D_LOG.body" "the PR body lost the branch's second commit"
+  assert_no_grep "Merged from an earlier PR" "$D_LOG.body" "the PR body lists a commit already on main"
+  pass "a branch that took in main after its clone started is titled and listed by its own commits only"
+}
+
 test_an_object_store_swapped_for_a_symlink_is_refused_before_it_is_touched() {
   local victim=
   make_world objects-race
@@ -757,6 +783,7 @@ test_teardown_refuses_contained_work_host_delivery_never_pushed
 test_teardown_accepts_contained_work_landed_in_a_merged_pr_head
 test_a_contained_local_only_branch_merges_from_a_snapshot
 test_a_worker_written_title_never_becomes_a_flag
+test_a_branch_that_took_in_main_is_titled_and_listed_by_its_own_commits
 test_an_object_store_swapped_for_a_symlink_is_refused_before_it_is_touched
 test_a_superseded_delivery_never_reports
 test_ci_outcomes_are_reported_without_an_agent
