@@ -60,7 +60,7 @@ Nothing from the host is mounted except this list, each entry at the same path i
 | The task's own clone | read-write | The worker's copy, as for a sandboxed task. |
 | The clone's `.git/config` and `.git/hooks` | read-only | Firstmate's own git commands read the clone on the host, so a planted `core.fsmonitor` or hook would run outside the container; the Claude sandbox denies writes to both for the same reason. |
 | The project clone's `.git/objects` | read-only | The clone borrows the project's history through `objects/info/alternates`. |
-| `<task-dir>/container/home` | read-write | `HOME` and `CLAUDE_CONFIG_DIR`, so transcripts and Claude state stay in the task area, never in the captain's `~/.claude`. |
+| `<task-dir>/container/home` | read-write | `HOME`, with `CLAUDE_CONFIG_DIR` at its `.claude`, so transcripts and Claude state stay in the task area, never in the captain's `~/.claude`. |
 | `<task-dir>/container/events` | read-write | The hook event file the host relays (below). |
 | `state/<id>.status`, `state/<id>.inbox`, `data/<id>` | read-write | The worker's status log, steering inbox, and brief and report directory. |
 | The one `state/operational-inbox` record carrying this launch's brief | read-only | The launch doorbell names it. |
@@ -94,6 +94,7 @@ With `--network none` and no mounted socket but the proxy's, a container whose p
 - `fm-control` interrupt and exit reach Claude through the pane's terminal as before; Claude's exit ends the container, `--rm` removes it, and the pane returns to its shell, so a relaunch finds an agent-free endpoint and starts a new container under the same name.
 - A relaunch keeps a task in the runtime it was spawned in ([`docs/configuration.md`](configuration.md#refusals-and-relaunch) has the refusals).
 - Teardown removes the task's container with `podman rm --force` before it reaps the task's processes, and refuses to remove the clone while that fails; the clone's task directory, with the container home, event file, spec, and proxy log, is removed with the clone, and the shared `fm-cargo-<project>` volume is kept.
+  Before that removal it copies the worker's session transcripts out of the container home into the host-only [session archive](configuration.md#session-archive), and a copy that cannot complete refuses the removal and keeps the task directory, transcripts included.
 - A container scout cannot run `fm-captain-hold.sh`, so its launch brief has it list its captain questions in its report, exactly as a sandboxed scout does, and Firstmate runs `hold` and `complete` for it.
 
 ## Host-side delivery
@@ -167,6 +168,7 @@ It spends no model tokens except in steps 3 and 5.
 4. Check the lifecycle on that scout: steer it with `bin/fm-send.sh` and watch the message move to `handled/`, interrupt it and exit it with `bin/fm-control.sh`, relaunch it, and tear it down; afterwards `podman ps -a --filter label=io.firstmate.task=<id>` must list nothing and `podman volume ls` must still list `fm-cargo-tokenbook`.
    While `podman top <name> comm args` lists `claude`, the steer must ring the doorbell rather than report that the agent has exited, and the interrupt must report `verified=agent-alive`; the exit must report `stopped`, and the relaunch must confirm its new agent.
    Before the exit, `podman exec <name> date` must print the host's local time and zone.
+   After the teardown, `~/.firstmate/session-archive/<home-tag>/<id>/projects/` must hold the scout's `<session-id>.jsonl` transcript, mode `600` in directories mode `700`.
 5. Check [host-side delivery](#host-side-delivery) with a real tokenbook ship on `luakso/tokenbook`: spawn a small `direct-PR` ship, such as a one-line README change, and let it report its ready branch.
    While its container runs, `podman exec <name> sh -c 'git ls-remote origin; curl -sS https://github.com'` must fail, and the proxy log must record `refused github.com:443`.
    Then run the delivery with canaries for the project's tools ahead of the real ones on `PATH`:

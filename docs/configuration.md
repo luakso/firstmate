@@ -959,6 +959,16 @@ A missing file, a symlink, a file owned by someone else, any group or other perm
 The token reaches Podman only through a private `0600` env file that the launch removes when the container exits, never on a command line or in a task record.
 The agent inside the container can read it from its own environment, so the captain scopes it to this purpose and rotates it.
 
+### Session archive
+
+A contained worker's Claude writes its session transcripts into the container home beside its task clone, which cleanup removes with the task directory, so before that removal teardown copies them into a host-only archive.
+The archive lives at `~/.firstmate/session-archive/<home-tag>/<id>/projects/`, keyed by the same `<home-tag>` and `<id>` as the [task clone](#the-task-clone) (with `FM_TASK_CLONE_ROOT` set, that directory's own name stands in for `<home-tag>`), outside every home, project, clone, and repository.
+It holds every regular `*.jsonl` file under the worker's `CLAUDE_CONFIG_DIR/projects/`, the session transcripts and their subagent transcripts, at the same relative path, in directories mode `700` and files mode `600`.
+The container home is worker-written, so it is read as data: symlinks are never followed or copied, a symlinked directory on the way to `projects/` archives nothing, and only regular files are copied.
+A transcript that cannot be archived refuses the removal, so teardown fails with the task directory and its transcripts kept; fix the cause and run teardown again.
+Firstmate never reads, prunes, or ships the archive; it is the captain's to read or remove.
+Tasks outside the container are unaffected, because their transcripts already live in the captain's own Claude config.
+
 ### Refusals and relaunch
 
 With a project file present, a spawn of that project also refuses, before anything exists, when any of these holds:

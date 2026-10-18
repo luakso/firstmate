@@ -64,6 +64,9 @@
 #   (z6) clone scout                                          -> ALLOW, clone removed
 #   (z7) container clone, podman removes its container        -> ALLOW, container then clone removed
 #   (z8) container clone, podman cannot remove it             -> REFUSE, clone kept
+#   (z9) container clone with session transcripts             -> ALLOW, regular *.jsonl archived privately first
+#   (z10) container clone whose projects/ is a symlink        -> ALLOW, nothing followed or archived
+#   (z11) container clone whose transcripts cannot be archived -> REFUSE, task directory and transcripts kept
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -251,7 +254,8 @@ clone_commit() {
 
 run_clone_teardown() {
   local case_dir=$1; shift
-  FM_HOME="$case_dir/home" run_teardown "$case_dir" "$@"
+  HOME="$case_dir/host-home" FM_HOME="$case_dir/home" \
+    run_teardown "$case_dir" "$@"
 }
 
 # Write a meta file for the task. Args: case_dir mode kind
@@ -1027,6 +1031,89 @@ test_container_task_teardown_refuses_when_its_container_remains() {
   assert_grep "container could not be removed" "$case_dir/stderr" "container-stuck: the refusal does not name the container"
   assert_present "$(clone_path "$case_dir")" "container-stuck: teardown removed the clone a live container may still write"
   pass "a container task's teardown refuses while its container cannot be removed"
+}
+
+# A contained worker's Claude config is <task-dir>/container/home/.claude, so
+# its session transcripts sit under projects/ there. Seeds a main transcript, a
+# subagent transcript, and the worker-planted entries the archive must skip.
+seed_container_transcripts() {  # <case-dir>
+  local projects
+  projects="$1/clones/task-x1/container/home/.claude/projects/-work-project"
+  mkdir -p "$projects/session-1/subagents" "$1/outside"
+  printf '{"secret":true}\n' > "$1/outside/secret.jsonl"
+  printf '{"type":"assistant"}\n' > "$projects/session-1.jsonl"
+  printf '{"type":"assistant","sub":true}\n' > "$projects/session-1/subagents/agent-a.jsonl"
+  printf 'not a transcript\n' > "$projects/session-1/notes.txt"
+  ln -s "$1/outside/secret.jsonl" "$projects/planted.jsonl"
+  mkfifo "$projects/pipe.jsonl"
+  chmod 644 "$projects/session-1.jsonl"
+}
+
+file_mode() {  # <path>
+  stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"
+}
+
+test_container_task_teardown_archives_its_transcripts() {
+  local case_dir rc archive
+  case_dir=$(make_container_scout_case container-transcripts 0)
+  seed_container_transcripts "$case_dir"
+  set +e
+  run_clone_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "container-transcripts: a container scout should be torn down"$'\n'"$(cat "$case_dir/stderr")"
+  assert_absent "$case_dir/clones/task-x1" "container-transcripts: teardown left the container task's directory behind"
+  archive="$case_dir/host-home/.firstmate/session-archive/clones/task-x1/projects/-work-project"
+  [ "$(cat "$archive/session-1.jsonl" 2>/dev/null)" = '{"type":"assistant"}' ] \
+    || fail "container-transcripts: the session transcript was not archived"
+  [ "$(cat "$archive/session-1/subagents/agent-a.jsonl" 2>/dev/null)" = '{"type":"assistant","sub":true}' ] \
+    || fail "container-transcripts: the subagent transcript was not archived"
+  assert_absent "$archive/planted.jsonl" "container-transcripts: a symlinked transcript was archived"
+  assert_absent "$archive/pipe.jsonl" "container-transcripts: a FIFO was archived"
+  assert_absent "$archive/session-1/notes.txt" "container-transcripts: a non-transcript file was archived"
+  [ "$(file_mode "$archive/session-1.jsonl")" = 600 ] || fail "container-transcripts: an archived transcript is not mode 600"
+  [ "$(file_mode "$archive/session-1/subagents")" = 700 ] || fail "container-transcripts: an archive directory is not mode 700"
+  [ "$(file_mode "$case_dir/host-home/.firstmate/session-archive/clones")" = 700 ] || fail "container-transcripts: the home's archive directory is not mode 700"
+  [ "$(cat "$case_dir/outside/secret.jsonl")" = '{"secret":true}' ] || fail "container-transcripts: the symlink target outside the home changed"
+  pass "a container task's teardown archives its regular session transcripts privately before removing its directory"
+}
+
+test_container_task_teardown_does_not_follow_a_symlinked_projects_dir() {
+  local case_dir rc claude_dir
+  case_dir=$(make_container_scout_case container-transcripts-symlink 0)
+  claude_dir="$case_dir/clones/task-x1/container/home/.claude"
+  mkdir -p "$claude_dir" "$case_dir/outside/-captain"
+  printf '{"captain":true}\n' > "$case_dir/outside/-captain/session.jsonl"
+  ln -s "$case_dir/outside" "$claude_dir/projects"
+  set +e
+  run_clone_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "container-transcripts-symlink: teardown should proceed"$'\n'"$(cat "$case_dir/stderr")"
+  assert_grep "is a symlink" "$case_dir/stderr" "container-transcripts-symlink: the skipped symlink was not reported"
+  assert_absent "$case_dir/host-home/.firstmate/session-archive" "container-transcripts-symlink: teardown archived through a symlink"
+  assert_present "$case_dir/outside/-captain/session.jsonl" "container-transcripts-symlink: teardown removed files outside the task directory"
+  assert_absent "$case_dir/clones/task-x1" "container-transcripts-symlink: teardown left the task directory behind"
+  pass "a container task's teardown never follows a symlinked transcript directory"
+}
+
+test_container_task_teardown_keeps_transcripts_it_cannot_archive() {
+  local case_dir rc
+  case_dir=$(make_container_scout_case container-transcripts-fail 0)
+  seed_container_transcripts "$case_dir"
+  mkdir -p "$case_dir/host-home/.firstmate"
+  printf 'not a directory\n' > "$case_dir/host-home/.firstmate/session-archive"
+  set +e
+  run_clone_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "container-transcripts-fail: teardown succeeded although the transcripts were not archived"
+  assert_grep "could not archive task task-x1's session transcript" "$case_dir/stderr" \
+    "container-transcripts-fail: the archive failure was not reported"$'\n'"$(cat "$case_dir/stderr")"
+  assert_present "$case_dir/clones/task-x1/container/home/.claude/projects/-work-project/session-1.jsonl" \
+    "container-transcripts-fail: teardown deleted transcripts it could not archive"
+  assert_present "$case_dir/state/task-x1.meta" "container-transcripts-fail: teardown removed the task record"
+  pass "a container task's teardown refuses and keeps its transcripts when the archive fails"
 }
 
 test_no_mistakes_origin_remote_allows() {
@@ -4509,6 +4596,9 @@ test_clone_with_foreign_marker_refuses_even_forced
 test_clone_scout_is_removed
 test_container_task_teardown_removes_its_container_first
 test_container_task_teardown_refuses_when_its_container_remains
+test_container_task_teardown_archives_its_transcripts
+test_container_task_teardown_does_not_follow_a_symlinked_projects_dir
+test_container_task_teardown_keeps_transcripts_it_cannot_archive
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
