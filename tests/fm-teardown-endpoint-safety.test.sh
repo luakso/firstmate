@@ -983,6 +983,42 @@ test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot() {
   pass "fm-teardown: a pool slot claimed by another task is left alone while the task's own cleanup finishes"
 }
 
+# The archived record must not tie a reassigned slot to this task's window, or
+# the other task's use of the slot would match both tasks.
+test_reassigned_pool_slot_archive_omits_the_worktree() {
+  local dir id=stale-task other=reassigned-task archive
+
+  dir=$(make_case slot-reassigned-archive)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout" "spawned_at=1700000000"
+  claim_pool_slot "$dir" "$other" "$dir/other-home"
+
+  run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr" \
+    || fail "teardown of a task whose slot was reassigned failed: $(cat "$dir/stderr")"
+  archive="$dir/home/state/archive/$id.1700000000.meta"
+  assert_present "$archive" "reassigned-slot teardown wrote no archived task record"
+  ! grep -q '^worktree=' "$archive" \
+    || fail "the archive tied a reassigned slot to the stale task: $(cat "$archive")"
+  assert_contains "$(cat "$archive")" "project=$dir/project" \
+    "the reassigned-slot archive lost the project"
+
+  dir=$(make_case slot-claim-own-archive)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout" "spawned_at=1700000000"
+  claim_pool_slot "$dir" "$id"
+
+  run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr" \
+    || fail "teardown of a task holding its own slot claim failed: $(cat "$dir/stderr")"
+  assert_contains "$(cat "$dir/home/state/archive/$id.1700000000.meta")" "worktree=$dir/worktree" \
+    "an owned slot's archive should keep the worktree"
+
+  pass "fm-teardown: a reassigned pool slot is left out of the stale task's archived record"
+}
+
 # The two states that must never become a false refusal: the task's own claim,
 # and no claim at all (a slot taken before claims existed, or already returned).
 test_own_and_absent_slot_claims_still_tear_down() {
@@ -1403,6 +1439,7 @@ test_reused_pool_slot_refuses_before_touching_the_other_task
 test_cross_home_pool_slot_collision_refuses
 test_sole_slot_record_still_tears_down
 test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot
+test_reassigned_pool_slot_archive_omits_the_worktree
 test_own_and_absent_slot_claims_still_tear_down
 test_recorded_endpoint_that_changed_directory_still_tears_down
 test_project_lock_anchors_at_the_local_root_across_home_layouts
