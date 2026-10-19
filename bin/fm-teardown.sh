@@ -20,6 +20,8 @@
 # record being removed, the intended transition is recorded in
 # state/<id>.backlog-close first, so a process killed between the halves leaves
 # the next session start enough to finish it; a landed close removes that record.
+# Just before that removal, a best-effort copy of a few record keys is kept
+# under state/archive/ (archive_task_record below; docs/configuration.md).
 # A close that fails is fatal and loud, preserves its pending-close record, and
 # is retried by the next session start. The transition is skipped on a
 # config/backlog-backend=manual home and in a markdown home that keeps no
@@ -1382,6 +1384,44 @@ default_branch() {
 meta_value() {
   local meta=$1 key=$2
   fm_meta_get "$meta" "$key"
+}
+
+# Durable copy of a cleaned-up task's record for outside readers such as a
+# spend tracker (docs/configuration.md, "Archived task records"): only the
+# allowed keys plus closed_at, at state/archive/<id>.<spawned_at>.meta. A record
+# older than spawned_at= falls back to spawn_gen's epoch (its latest launch).
+# Best effort: any failure warns and returns 0 so cleanup never refuses on it.
+archive_task_record() {  # <meta> <id> <state-dir>
+  local meta=$1 id=$2 state=$3 dir spawned key value tmp
+  dir="$state/archive"
+  spawned=$(fm_meta_get "$meta" spawned_at)
+  if [ -z "$spawned" ]; then
+    spawned=$(fm_meta_get "$meta" spawn_gen)
+    spawned=${spawned#s}
+    spawned=${spawned%%.*}
+  fi
+  case "$spawned" in *[!0-9]*) spawned= ;; esac
+  if [ -z "$spawned" ]; then
+    echo "warning: not archiving $id's task record: it has no spawned_at or spawn_gen time" >&2
+    return 0
+  fi
+  if ! (umask 077 && mkdir -p -- "$dir") 2>/dev/null \
+      || ! tmp=$(umask 077 && mktemp "$dir/.$id.meta.XXXXXX" 2>/dev/null); then
+    echo "warning: could not archive $id's task record under $dir" >&2
+    return 0
+  fi
+  if ! {
+      for key in project worktree kind branch; do
+        value=$(fm_meta_get "$meta" "$key")
+        [ -z "$value" ] || printf '%s=%s\n' "$key" "$value"
+      done
+      printf 'spawned_at=%s\n' "$spawned"
+      printf 'closed_at=%s\n' "$(date +%s)"
+    } >"$tmp" || ! mv -f -- "$tmp" "$dir/$id.$spawned.meta"; then
+    rm -f -- "$tmp"
+    echo "warning: could not archive $id's task record under $dir" >&2
+  fi
+  return 0
 }
 
 require_orca_worktree_id() {
@@ -3987,6 +4027,8 @@ if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ];
     echo "warning: retaining herdr presentation journal for $ID; it still names a projected workspace the session-start sweep owns, not the closed endpoint" >&2
   fi
 fi
+# Keep a durable copy of the record before the transitions below remove it.
+[ ! -f "$META" ] || archive_task_record "$META" "$ID" "$STATE"
 # The record is gone, so the backlog must not still show this task in flight
 # when teardown reports success. Still under this task's meta lock, so a steer
 # racing the same id stays serialized exactly as it was before. A captain-held

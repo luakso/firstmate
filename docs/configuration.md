@@ -90,6 +90,7 @@ Each effective `FM_HOME` contains private operational directories.
 - One-shot Bearings reconcile requests under `state/reconcile-notify/`.
 - Private secondmate config-reread generations with their retry and quarantine state.
 - Per-task steering-inbox records under `state/<id>.inbox/` (`bin/fm-task-inbox-lib.sh`).
+- Archived task records under `state/archive/` (see "Archived task records" below).
 - Parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
 
 `config/` holds local gitignored operating choices, including explicit extension bindings under `config/extensions.d/`.
@@ -109,6 +110,22 @@ Untracked files and directories whose names begin with `scratchpad` are also git
 - The [`bin/fm-fleet-snapshot.sh` header](../bin/fm-fleet-snapshot.sh) owns the snapshot's event-time and age fields, including secondmate parent-event projections.
 
 - Wake, watcher, away-mode, and Relay-specific state mechanics remain with their named scripts and reference sections rather than being duplicated into one exhaustive state tree here.
+
+### Archived task records
+
+Successful cleanup by `bin/fm-teardown.sh` keeps a copy of each task's record as `state/archive/<id>.<spawned_at>.meta` just before it removes `state/<id>.meta`.
+The file uses the same `key=value` lines as the task record and holds only `project=`, `worktree=`, `kind=`, `branch=`, `spawned_at=`, and `closed_at=`.
+A key the task record lacks is omitted, and no prompt, instruction, status line, or other file is copied.
+`spawned_at` is the task's first launch time in Unix seconds, which `bin/fm-spawn.sh` records and a relaunch keeps.
+For an older record without `spawned_at=`, it is taken from the record's `spawn_gen` epoch instead, which is that task's latest launch time rather than its first.
+`closed_at` is the cleanup time in Unix seconds.
+Because pooled worktree folders are reused across tasks, the `spawned_at` to `closed_at` window tells which task a worktree served at a given time.
+Naming by id and `spawned_at` means a later task that reuses an id never overwrites an earlier task's record.
+Each file is written privately to a temporary file and then renamed into place.
+A failure to write the archive only prints a warning; cleanup still proceeds and its refusals and landed-work checks are unchanged.
+The local secondmate retirement path archives the secondmate's own record the same way; remote secondmate retirement and forced child cleanup do not.
+Firstmate never prunes or rotates the archive.
+Outside tools, such as a spend tracker that attributes AI usage to the work it served, may read these files.
 
 ### Session-start references
 

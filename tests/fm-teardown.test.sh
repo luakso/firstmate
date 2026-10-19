@@ -797,6 +797,66 @@ test_teardown_closes_the_backlog_item_itself() {
   pass "teardown closes its own backlog item before reporting success"
 }
 
+test_teardown_archives_only_the_allowed_record_keys() {
+  local case_dir archive closed_at
+  case_dir=$(make_case archive-allowed-keys)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' 'branch=fm/task-x1' \
+    'spawned_at=1700000000' 'prompt=do not copy me' >> "$case_dir/state/task-x1.meta"
+  printf '%s\n' 'working: secret status' > "$case_dir/state/task-x1.status"
+
+  run_teardown "$case_dir" >/dev/null || fail "archive: teardown failed"
+  archive="$case_dir/state/archive/task-x1.1700000000.meta"
+  assert_present "$archive" "archive: teardown wrote no archived task record"
+  [ "$(cut -d= -f1 "$archive" | tr '\n' ' ')" = "project worktree kind branch spawned_at closed_at " ] \
+    || fail "archive: unexpected keys: $(cat "$archive")"
+  assert_grep "project=$case_dir/project" "$archive" "archive: project not copied"
+  assert_grep "worktree=$case_dir/wt" "$archive" "archive: worktree not copied"
+  assert_grep 'kind=ship' "$archive" "archive: kind not copied"
+  assert_grep 'branch=fm/task-x1' "$archive" "archive: branch not copied"
+  closed_at=$(sed -n 's/^closed_at=//p' "$archive")
+  case "$closed_at" in ''|*[!0-9]*) fail "archive: closed_at is not Unix seconds: $closed_at" ;; esac
+  [ "$(find "$archive" -perm 600 | wc -l)" -eq 1 ] || fail "archive: record is not private (0600)"
+  assert_absent "$case_dir/state/task-x1.meta" "archive: teardown kept the task record"
+  pass "teardown archives only project, worktree, kind, branch, spawned_at, and closed_at"
+}
+
+test_teardown_archive_keeps_earlier_record_for_reused_id() {
+  local case_dir
+  case_dir=$(make_case archive-reused-id)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  mkdir -p "$case_dir/state/archive"
+  printf '%s\n' 'kind=ship' 'spawned_at=1600000000' 'closed_at=1600000500' \
+    > "$case_dir/state/archive/task-x1.1600000000.meta"
+  # A record from before spawned_at= existed falls back to spawn_gen's epoch.
+  sed 's/^spawn_gen=.*/spawn_gen=s1700000000.123.45/' "$case_dir/state/task-x1.meta" > "$case_dir/meta.new"
+  mv "$case_dir/meta.new" "$case_dir/state/task-x1.meta"
+
+  run_teardown "$case_dir" >/dev/null || fail "archive reuse: teardown failed"
+  assert_grep 'closed_at=1600000500' "$case_dir/state/archive/task-x1.1600000000.meta" \
+    "archive reuse: the earlier task's record was overwritten"
+  assert_grep 'spawned_at=1700000000' "$case_dir/state/archive/task-x1.1700000000.meta" \
+    "archive reuse: the later task's record was not archived from spawn_gen"
+  pass "a reused task id keeps both archived records"
+}
+
+test_teardown_archive_write_failure_warns_without_blocking() {
+  local case_dir
+  case_dir=$(make_case archive-write-failure)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' 'spawned_at=1700000000' \
+    >> "$case_dir/state/task-x1.meta"
+  printf '%s\n' 'not a directory' > "$case_dir/state/archive"
+
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "archive failure: teardown refused: $(cat "$case_dir/stderr")"
+  assert_grep 'could not archive task-x1' "$case_dir/stderr" "archive failure: no warning"
+  assert_grep 'teardown task-x1 complete' "$case_dir/stdout" "archive failure: teardown did not complete"
+  assert_absent "$case_dir/state/task-x1.meta" "archive failure: teardown kept the task record"
+  pass "an archive write failure warns and cleanup still completes"
+}
+
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator() {
   local case_dir out backlog_path
   case_dir=$(make_case tasks-axi-manual-optout)
@@ -4586,6 +4646,9 @@ test_retained_sources_still_reach_the_ordinary_refusal
 test_local_only_fork_remote_allows
 test_teardown_closes_the_backlog_item_itself
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator
+test_teardown_archives_only_the_allowed_record_keys
+test_teardown_archive_keeps_earlier_record_for_reused_id
+test_teardown_archive_write_failure_warns_without_blocking
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
 test_clone_pushed_work_is_removed_without_treehouse

@@ -2122,6 +2122,13 @@ test_claude_sandbox_downloads_go_modules_at_spawn() {
     || fail "go mod download did not run in the worktree with the task's own caches with a pinned environment before claude starts"$'\n'"$(cat "$GO_LOG")"
   [ -s "$LAUNCH_LOG" ] || fail "the sandboxed Go module worker did not launch"
 
+  meta="$HOME_DIR/state/sandbox-go-ok-z40.meta"
+  case "$(sed -n 's/^spawned_at=//p' "$meta")" in
+    ''|*[!0-9]*) fail "a fresh spawn did not record spawned_at in Unix seconds"$'\n'"$(cat "$meta")" ;;
+  esac
+  # A relaunch keeps the first launch time; pin a sentinel to prove it.
+  sed 's/^spawned_at=.*/spawned_at=1/' "$meta" > "$meta.new" && mv "$meta.new" "$meta"
+
   # A relaunch's go.mod and module cache are worker-controlled, so it never
   # downloads.
   rm -f "$GO_LOG"
@@ -2144,6 +2151,8 @@ SH
   expect_code 0 "$status" "the relaunched Go launch command should run"$'\n'"$out"
   [ -e "$CASE_DIR/claude.mark" ] || fail "the relaunch command never reached claude"
   [ ! -e "$GO_LOG" ] || fail "a relaunch ran go mod download"$'\n'"$(cat "$GO_LOG")"
+  [ "$(grep -c '^spawned_at=' "$meta")" = 1 ] && [ "$(sed -n 's/^spawned_at=//p' "$meta")" = 1 ] \
+    || fail "a relaunch did not keep the first launch's spawned_at"$'\n'"$(cat "$meta")"
 
   # Workspace mode reaches every module the workspace uses, so a root go.work
   # without a root go.mod still downloads.
