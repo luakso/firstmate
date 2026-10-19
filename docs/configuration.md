@@ -113,18 +113,19 @@ Untracked files and directories whose names begin with `scratchpad` are also git
 
 ### Archived task records
 
-Successful cleanup by `bin/fm-teardown.sh` keeps a copy of each task's record as `state/archive/<id>.<spawned_at>.meta` just before it removes `state/<id>.meta`.
+Successful cleanup by `bin/fm-teardown.sh` keeps a copy of each task's record in `state/archive/` just before it removes `state/<id>.meta`.
 The file uses the same `key=value` lines as the task record and holds only `project=`, `worktree=`, `kind=`, `branch=`, `spawned_at=`, and `closed_at=`.
 A key the task record lacks is omitted, and no prompt, instruction, status line, or other file is copied.
 `spawned_at` is the task's first launch time in Unix seconds, which `bin/fm-spawn.sh` records and a relaunch keeps.
-For an older record without `spawned_at=`, it is taken from the record's `spawn_gen` epoch instead, which is that task's latest launch time rather than its first.
 `closed_at` is the cleanup time in Unix seconds.
 Because pooled worktree folders are reused across tasks, the `spawned_at` to `closed_at` window tells which task a worktree served at a given time.
-Naming by id and `spawned_at` means a later task that reuses an id never overwrites an earlier task's record.
+When cleanup finds the task's pool slot was already reassigned to another task, the archive omits `worktree=`, so the window never claims a slot another task was using.
+The file is named `<id>.<spawned_at>.meta`, so a later task that reuses an id never overwrites an earlier task's record.
+A record without `spawned_at=`, such as one written before Firstmate recorded it, is archived without `spawned_at` as `<id>.<closed_at>.meta`.
 Each file is written privately to a temporary file and then renamed into place.
 A failure to write the archive only prints a warning; cleanup still proceeds and its refusals and landed-work checks are unchanged.
-The local secondmate retirement path archives the secondmate's own record the same way; remote secondmate retirement and forced child cleanup do not.
-Firstmate never prunes or rotates the archive.
+The local secondmate retirement path archives the secondmate's own record the same way; remote secondmate retirement and forced child cleanup do not archive.
+The archive lives inside its home: retiring a secondmate home, or forced child-home cleanup, removes that home together with its archive.
 Outside tools, such as a spend tracker that attributes AI usage to the work it served, may read these files.
 
 ### Session-start references

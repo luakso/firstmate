@@ -825,20 +825,37 @@ test_teardown_archive_keeps_earlier_record_for_reused_id() {
   local case_dir
   case_dir=$(make_case archive-reused-id)
   write_meta "$case_dir" no-mistakes ship
-  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' 'spawned_at=1700000000' \
+    >> "$case_dir/state/task-x1.meta"
   mkdir -p "$case_dir/state/archive"
   printf '%s\n' 'kind=ship' 'spawned_at=1600000000' 'closed_at=1600000500' \
     > "$case_dir/state/archive/task-x1.1600000000.meta"
-  # A record from before spawned_at= existed falls back to spawn_gen's epoch.
-  sed 's/^spawn_gen=.*/spawn_gen=s1700000000.123.45/' "$case_dir/state/task-x1.meta" > "$case_dir/meta.new"
-  mv "$case_dir/meta.new" "$case_dir/state/task-x1.meta"
 
   run_teardown "$case_dir" >/dev/null || fail "archive reuse: teardown failed"
   assert_grep 'closed_at=1600000500' "$case_dir/state/archive/task-x1.1600000000.meta" \
     "archive reuse: the earlier task's record was overwritten"
   assert_grep 'spawned_at=1700000000' "$case_dir/state/archive/task-x1.1700000000.meta" \
-    "archive reuse: the later task's record was not archived from spawn_gen"
+    "archive reuse: the later task's record was not archived"
   pass "a reused task id keeps both archived records"
+}
+
+test_teardown_archive_without_spawned_at_is_named_by_closed_at() {
+  local case_dir archive closed_at
+  case_dir=$(make_case archive-no-spawned-at)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+
+  run_teardown "$case_dir" >/dev/null || fail "archive without spawned_at: teardown failed"
+  set -- "$case_dir"/state/archive/task-x1.*.meta
+  [ "$#" -eq 1 ] && [ -f "$1" ] || fail "archive without spawned_at: expected one archived record, got: $*"
+  archive=$1
+  closed_at=$(sed -n 's/^closed_at=//p' "$archive")
+  case "$closed_at" in ''|*[!0-9]*) fail "archive without spawned_at: closed_at is not Unix seconds: $closed_at" ;; esac
+  [ "$archive" = "$case_dir/state/archive/task-x1.$closed_at.meta" ] \
+    || fail "archive without spawned_at: record is not named by closed_at: $archive"
+  ! grep -q '^spawned_at=' "$archive" \
+    || fail "archive without spawned_at: a spawned_at was invented: $(cat "$archive")"
+  pass "a record without spawned_at is archived without it, named by closed_at"
 }
 
 test_teardown_archive_write_failure_warns_without_blocking() {
@@ -4648,6 +4665,7 @@ test_teardown_closes_the_backlog_item_itself
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator
 test_teardown_archives_only_the_allowed_record_keys
 test_teardown_archive_keeps_earlier_record_for_reused_id
+test_teardown_archive_without_spawned_at_is_named_by_closed_at
 test_teardown_archive_write_failure_warns_without_blocking
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows

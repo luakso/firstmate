@@ -1388,23 +1388,16 @@ meta_value() {
 
 # Durable copy of a cleaned-up task's record for outside readers such as a
 # spend tracker (docs/configuration.md, "Archived task records"): only the
-# allowed keys plus closed_at, at state/archive/<id>.<spawned_at>.meta. A record
-# older than spawned_at= falls back to spawn_gen's epoch (its latest launch).
+# allowed keys plus closed_at, at state/archive/<id>.<spawned_at>.meta, or
+# <id>.<closed_at>.meta for a record without spawned_at=. worktree= is left out
+# when the slot was reassigned, since this task no longer owns it.
 # Best effort: any failure warns and returns 0 so cleanup never refuses on it.
 archive_task_record() {  # <meta> <id> <state-dir>
-  local meta=$1 id=$2 state=$3 dir spawned key value tmp
+  local meta=$1 id=$2 state=$3 dir spawned closed key value tmp
   dir="$state/archive"
   spawned=$(fm_meta_get "$meta" spawned_at)
-  if [ -z "$spawned" ]; then
-    spawned=$(fm_meta_get "$meta" spawn_gen)
-    spawned=${spawned#s}
-    spawned=${spawned%%.*}
-  fi
   case "$spawned" in *[!0-9]*) spawned= ;; esac
-  if [ -z "$spawned" ]; then
-    echo "warning: not archiving $id's task record: it has no spawned_at or spawn_gen time" >&2
-    return 0
-  fi
+  closed=$(date +%s)
   if ! (umask 077 && mkdir -p -- "$dir") 2>/dev/null \
       || ! tmp=$(umask 077 && mktemp "$dir/.$id.meta.XXXXXX" 2>/dev/null); then
     echo "warning: could not archive $id's task record under $dir" >&2
@@ -1412,12 +1405,13 @@ archive_task_record() {  # <meta> <id> <state-dir>
   fi
   if ! {
       for key in project worktree kind branch; do
+        [ "$key" != worktree ] || teardown_owns_worktree || continue
         value=$(fm_meta_get "$meta" "$key")
         [ -z "$value" ] || printf '%s=%s\n' "$key" "$value"
       done
-      printf 'spawned_at=%s\n' "$spawned"
-      printf 'closed_at=%s\n' "$(date +%s)"
-    } >"$tmp" || ! mv -f -- "$tmp" "$dir/$id.$spawned.meta"; then
+      [ -z "$spawned" ] || printf 'spawned_at=%s\n' "$spawned"
+      printf 'closed_at=%s\n' "$closed"
+    } >"$tmp" || ! mv -f -- "$tmp" "$dir/$id.${spawned:-$closed}.meta"; then
     rm -f -- "$tmp"
     echo "warning: could not archive $id's task record under $dir" >&2
   fi
