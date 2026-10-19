@@ -1,0 +1,15 @@
+teardown lab59ae327948c0-mate complete (window firstmate:fm-lab59ae327948c0-mate, worktree /tmp/fmlab.vt4O2z/mate)
+exit=0
+# archive after real fm-teardown.sh retiring the local second mate
+total 8
+drwx------ 2 picasso picasso   80 Oct 19 09:44 .
+drwxr-xr-x 8 picasso picasso 1000 Oct 19 09:44 ..
+-rw------- 1 picasso picasso  122 Oct 19 09:44 lab59ae327948c0-mate.1792374186.meta
+-rw------- 1 picasso picasso  201 Oct 19 09:44 lab59ae327948c0-worker.1792374191.meta
+== mate archive:
+project=/tmp/fmlab.vt4O2z/mate
+worktree=/tmp/fmlab.vt4O2z/mate
+kind=secondmate
+spawned_at=1792374186
+closed_at=1792374278
+ls: cannot access '/tmp/fmlab.vt4O2z/mate': No such file or directory

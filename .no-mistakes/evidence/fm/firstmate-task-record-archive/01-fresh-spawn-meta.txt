@@ -1,0 +1,33 @@
+# fresh spawn task records (real bin/fm-spawn.sh in lab), date +%s=1792374228
+== /tmp/fmlab.vt4O2z/home/state/lab59ae327948c0-worker.meta
+window=firstmate:fm-lab59ae327948c0-worker
+endpoint_task_id=lab59ae327948c0-worker
+worktree=/tmp/fmlab.vt4O2z/treehouse/.treehouse/notes-7e8fc1/1/notes
+project=/tmp/fmlab.vt4O2z/home/projects/notes
+harness=claude
+kind=ship
+mode=local-only
+yolo=on
+branch=fm/lab59ae327948c0-worker
+tasktmp=/tmp/fm-lab59ae327948c0-worker
+model=sonnet
+effort=low
+busy_gen=g1792374191.2949339.11605
+spawn_gen=s1792374191.2945324.11163
+spawned_at=1792374191
+== /tmp/fmlab.vt4O2z/home/state/lab59ae327948c0-mate.meta
+window=firstmate:fm-lab59ae327948c0-mate
+endpoint_task_id=lab59ae327948c0-mate
+worktree=/tmp/fmlab.vt4O2z/mate
+project=/tmp/fmlab.vt4O2z/mate
+harness=claude
+kind=secondmate
+mode=secondmate
+yolo=off
+tasktmp=/tmp/fm-lab59ae327948c0-mate
+model=sonnet
+effort=low
+spawn_gen=s1792374186.2941527.29087
+spawned_at=1792374186
+home=/tmp/fmlab.vt4O2z/mate
+projects=

@@ -1,0 +1,24 @@
+# adversarial: state/archive made read-only (chmod 500) before teardown
+dr-x------ 2 picasso picasso 120 Oct 19 09:46 /tmp/fmlab.vt4O2z/home/state/archive
+## fm-teardown.sh labarchfail-w
+teardown: reaping leaked worktree process group for labarchfail-w: 3007434
+teardown: force-killing leaked worktree process group for labarchfail-w: 3007434
+A new version of treehouse is available: v3.1.0 → v3.1.4
+Run "treehouse update" to update
+
+🌳 Terminated lingering processes: bash (3007778), claude (3010411)
+🌳 Worktree returned to pool.
+warning: could not archive labarchfail-w's task record under /tmp/fmlab.vt4O2z/home/state/archive
+teardown labarchfail-w complete (window firstmate:fm-labarchfail-w, worktree /tmp/fmlab.vt4O2z/treehouse/.treehouse/notes-7e8fc1/2/notes)
+Backlog: labarchfail-w is closed in /tmp/fmlab.vt4O2z/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+exit=0
+## task record still present?
+ls: cannot access '/tmp/fmlab.vt4O2z/home/state/labarchfail-w.meta': No such file or directory
+## backlog row
+- [x] labarchfail-w - lab archive worker labarchfail-w (repo: notes) (kind: ship) (done 2026-10-19)
+## archive files for labarchfail-w
+0
+lab59ae327948c0-mate.1792374186.meta
+lab59ae327948c0-worker.1792374191.meta
+lab59ae327948c0-worker.1792374349.meta
+labarchnosp-w.1792374371.meta

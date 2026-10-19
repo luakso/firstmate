@@ -1,0 +1,35 @@
+# legacy record without spawned_at= (line stripped from a real spawn's record to mimic a pre-change task)
+window=firstmate:fm-labarchnosp-w
+endpoint_task_id=labarchnosp-w
+worktree=/tmp/fmlab.vt4O2z/treehouse/.treehouse/notes-7e8fc1/1/notes
+project=/tmp/fmlab.vt4O2z/home/projects/notes
+harness=claude
+kind=ship
+mode=local-only
+yolo=on
+branch=fm/labarchnosp-w
+tasktmp=/tmp/fm-labarchnosp-w
+model=sonnet
+effort=low
+busy_gen=g1792374299.3004226.13227
+spawn_gen=s1792374299.3002213.10157
+## fm-teardown.sh labarchnosp-w
+teardown: reaping leaked worktree process group for labarchnosp-w: 3002806
+teardown: force-killing leaked worktree process group for labarchnosp-w: 3002806
+A new version of treehouse is available: v3.1.0 → v3.1.4
+Run "treehouse update" to update
+
+🌳 Terminated lingering processes: bash (3003056), claude (3006067)
+🌳 Worktree returned to pool.
+teardown labarchnosp-w complete (window firstmate:fm-labarchnosp-w, worktree /tmp/fmlab.vt4O2z/treehouse/.treehouse/notes-7e8fc1/1/notes)
+Backlog: labarchnosp-w is closed in /tmp/fmlab.vt4O2z/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+exit=0
+teardown wall window: 1792374368..1792374371
+## archive files for labarchnosp-w
+-rw-------  1 picasso picasso  170 Oct 19 09:46 labarchnosp-w.1792374371.meta
+== /tmp/fmlab.vt4O2z/home/state/archive/labarchnosp-w.1792374371.meta
+project=/tmp/fmlab.vt4O2z/home/projects/notes
+worktree=/tmp/fmlab.vt4O2z/treehouse/.treehouse/notes-7e8fc1/1/notes
+kind=ship
+branch=fm/labarchnosp-w
+closed_at=1792374371

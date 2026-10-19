@@ -1,0 +1,25 @@
+NOTICE: wake rows held by the live supervision branch - it presents and acknowledges them; do not drain them from here.
+teardown: reaping leaked worktree process group for lab59ae327948c0-worker: 2946373
+teardown: force-killing leaked worktree process group for lab59ae327948c0-worker: 2946373
+A new version of treehouse is available: v3.1.0 → v3.1.4
+Run "treehouse update" to update
+
+🌳 Terminated lingering processes: bash (2946690), claude (2977590)
+🌳 Worktree returned to pool.
+teardown lab59ae327948c0-worker complete (window firstmate:fm-lab59ae327948c0-worker, worktree /tmp/fmlab.vt4O2z/treehouse/.treehouse/notes-7e8fc1/1/notes)
+Backlog: lab59ae327948c0-worker is closed in /tmp/fmlab.vt4O2z/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+exit=0
+# archive after real fm-teardown.sh of the relaunched worker
+total 4
+drwx------  2 picasso picasso   60 Oct 19 09:44 .
+drwxr-xr-x 10 picasso picasso 1160 Oct 19 09:44 ..
+-rw-------  1 picasso picasso  201 Oct 19 09:44 lab59ae327948c0-worker.1792374191.meta
+== /tmp/fmlab.vt4O2z/home/state/archive/lab59ae327948c0-worker.1792374191.meta
+project=/tmp/fmlab.vt4O2z/home/projects/notes
+worktree=/tmp/fmlab.vt4O2z/treehouse/.treehouse/notes-7e8fc1/1/notes
+kind=ship
+branch=fm/lab59ae327948c0-worker
+spawned_at=1792374191
+closed_at=1792374260
+mode=600
+remaining state files for worker: 0

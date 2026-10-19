@@ -1,0 +1,11 @@
+ok - fm-teardown: a reassigned pool slot is left out of the stale task's archived record
+ok - fm-teardown: a pool slot claimed by another task is left alone while the task's own cleanup finishes
+exit=0
+warning: lsof is unavailable; cannot resolve the tmux pane process group for task-x1
+ok - teardown archives only project, worktree, kind, branch, spawned_at, and closed_at
+warning: lsof is unavailable; cannot resolve the tmux pane process group for task-x1
+ok - a reused task id keeps both archived records
+warning: lsof is unavailable; cannot resolve the tmux pane process group for task-x1
+ok - a record without spawned_at is archived without it, named by closed_at
+ok - an archive write failure warns and cleanup still completes
+exit=0

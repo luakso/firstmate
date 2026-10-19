@@ -1,0 +1,19 @@
+relaunched lab59ae327948c0-worker harness=claude from=claude model=sonnet effort=low backend=tmux endpoint=firstmate:fm-lab59ae327948c0-worker worktree=/tmp/fmlab.vt4O2z/treehouse/.treehouse/notes-7e8fc1/1/notes
+# after real fm-control.sh relaunch
+window=firstmate:fm-lab59ae327948c0-worker
+endpoint_task_id=lab59ae327948c0-worker
+worktree=/tmp/fmlab.vt4O2z/treehouse/.treehouse/notes-7e8fc1/1/notes
+project=/tmp/fmlab.vt4O2z/home/projects/notes
+harness=claude
+kind=ship
+mode=local-only
+yolo=on
+branch=fm/lab59ae327948c0-worker
+tasktmp=/tmp/fm-lab59ae327948c0-worker
+model=sonnet
+effort=low
+busy_gen=g1792374242.2976174.22892
+spawn_gen=s1792374243.2975368.21591
+spawned_at=1792374191
+control_relaunch_tx=2973796.20261019T014401Z.12649
+spawned_at lines: 1
