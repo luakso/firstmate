@@ -20,7 +20,7 @@ Every record carries these members:
 | ------- | --------------------------------------------------------- |
 | `v`     | Record format version, currently `1`                      |
 | `ts`    | Unix time in seconds when the record was written          |
-| `event` | One of the five event names below                         |
+| `event` | One of the event names below                              |
 | `task`  | The firstmate task id the record is about                 |
 
 Readers must ignore members and events they do not recognize, so later versions can add them without breaking existing readers.
@@ -30,12 +30,18 @@ Readers must ignore members and events they do not recognize, so later versions 
 | Event              | Extra members                                  | Written when |
 | ------------------ | ---------------------------------------------- | ------------ |
 | `task.dispatched`  | `kind`, `project`, `harness`, `model`          | A new worker or second mate is launched. A relaunch of an existing task is not recorded. |
+| `task.session`     | `harness`, `session_id`, `project`             | A claude or pi worker is launched with a session id Firstmate assigned, at spawn and again at each relaunch. |
 | `task.status`      | `state`, `key`, `text`                         | A complete, nonblank line in the task's status log is captured. |
 | `task.pr_ready`    | `pr`                                           | Firstmate records the task's PR as ready for review. |
 | `task.merged`      | `via` (`"pr"` or `"local"`), plus `pr` when `via` is `"pr"` | The task's PR merge is recorded, or its local-only branch landed. |
 | `task.cleaned_up`  | none                                           | The task's worker and local copy were removed. |
 
 `task.dispatched` members: `kind` is `ship`, `scout`, or `secondmate`; `project` is the project directory name, or `null` for a remote second mate; `harness` names the agent tool; `model` is the requested model, or `null` for the tool's default.
+
+`task.session` members: `harness` is spelled as in `task.dispatched`, `session_id` is the harness's own session id, and `project` is the project directory name, or `null`.
+The id is the one Firstmate hands the launch with `--session-id`, so it names the session whose Claude transcript carries it as `sessionId` or whose Pi session header carries it as its id; it is assigned by Firstmate, never read back or guessed.
+It is written after `task.dispatched` on a fresh spawn and alone on a relaunch, once per launch, and only for `claude` and `pi` (Pi only when it advertises `--session-id`).
+A Pi relaunch that resumes its previous session keeps that id and writes nothing, and every other harness writes nothing.
 
 `task.pr_ready` members: `pr` is the PR's full URL.
 It is written each time firstmate records a PR for the task, so registering a replacement PR, or the same PR again, writes another record; recording the PR again as part of merging it writes none.
@@ -48,6 +54,7 @@ Example:
 
 ```json
 {"v":1,"ts":1790132857,"event":"task.dispatched","task":"fix-login","kind":"ship","project":"webapp","harness":"claude","model":null}
+{"v":1,"ts":1790132858,"event":"task.session","task":"fix-login","harness":"claude","session_id":"3f2b9c1e-0000-4000-8000-00000000a001","project":"webapp"}
 {"v":1,"ts":1790132870,"event":"task.status","task":"fix-login","state":"working","key":null,"text":" bug reproduced"}
 {"v":1,"ts":1790133400,"event":"task.status","task":"fix-login","state":"done","key":null,"text":" PR https://github.com/acme/webapp/pull/7 checks green"}
 {"v":1,"ts":1790133410,"event":"task.pr_ready","task":"fix-login","pr":"https://github.com/acme/webapp/pull/7"}
@@ -79,7 +86,8 @@ Example:
 These are possible follow-ups, deliberately left out of this version:
 
 - session start, away-mode, and quiet-mode events;
-- relaunch events;
+- relaunch events other than `task.session`;
+- `task.reverted` and `task.superseded`, which a reader judging merged work as reverted or superseded would need;
 - whether a worker is currently working or idle, and when a turn ends; subscribe to the Herdr runtime's own `pane.agent_status_changed` events for that ([Push events and polling fallback](herdr-backend.md#push-events-and-polling-fallback));
 - sequence numbers and gap detection;
 - rotation and continuity across rotated files;

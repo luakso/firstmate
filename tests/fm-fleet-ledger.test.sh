@@ -6,25 +6,15 @@
 # bin/fm-teardown.sh. docs/fleet-ledger.md owns the record contract.
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-fleet-ledger)
 
 make_fakebin() {  # <dir>
   local fakebin
   fakebin=$(fm_fakebin "$1")
-  cat > "$fakebin/tmux" <<'SH'
-#!/usr/bin/env bash
-case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
-esac
-case "${1:-}" in
-  display-message) printf 'firstmate\n' ;;
-esac
-exit 0
-SH
-  chmod +x "$fakebin/tmux"
+  fm_test_fake_tmux_spawn "$fakebin"
   fm_fake_exit0 "$fakebin" treehouse no-mistakes
   printf '%s\n' "$fakebin"
 }
@@ -51,6 +41,7 @@ Exercise the fleet ledger for $TASK.
 Nothing to build.
 EOF
   FAKEBIN=$(make_fakebin "$dir")
+  LAUNCH_LOG="$dir/launch.log"
 }
 
 in_home() {  # <command...>: run one real script against the case home
@@ -86,8 +77,8 @@ run_lifecycle() {
   out=$(in_home "$ROOT/bin/fm-teardown.sh" "$TASK" 2>&1) || fail "teardown failed: $out"
 }
 
-ledger_rows() {  # <jq filter>: print one compact row per ledger record
-  jq -c "$1" "$HOME_DIR/state/fleet-ledger.jsonl"
+ledger_rows() {  # <jq filter>: print one compact row per ledger record except task.session, which session_rows owns
+  jq -c "select(.event != \"task.session\") | $1" "$HOME_DIR/state/fleet-ledger.jsonl"
 }
 
 test_flag_on_records_the_task_lifecycle() {
@@ -275,6 +266,139 @@ test_flag_off_writes_nothing() {
   pass "flag off: the whole lifecycle leaves no ledger file, offset, or lock"
 }
 
+UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+
+spawn_logged() {  # spawn in the case home, launch command to $LAUNCH_LOG
+  : > "$LAUNCH_LOG"
+  FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" in_home "$ROOT/bin/fm-spawn.sh" "$TASK" "$PROJ_DIR" --mode local-only --yolo off 2>&1
+}
+
+# A Pi that advertises (or not) --session-id; the launch is never executed.
+fake_pi() {  # <fakebin> <with-session-id|without>
+  local flag=
+  [ "$2" != with-session-id ] || flag='  --session-id <id>  Use exact project session ID'
+  cat > "$1/pi" <<SH
+#!/usr/bin/env bash
+printf '%s\n' '  --tui-mode <mode>  TUI mode' '$flag'
+SH
+  chmod +x "$1/pi"
+}
+
+session_rows() {
+  jq -c 'select(.event == "task.session")' "$HOME_DIR/state/fleet-ledger.jsonl" 2>/dev/null || true
+}
+
+test_claude_spawn_records_the_session_it_launched_with() {
+  local out row id
+  make_case session-claude on
+  out=$(spawn_logged) || fail "spawn failed: $out"
+  row=$(session_rows)
+  assert_equals 1 "$(printf '%s\n' "$row" | grep -c .)" "task.session rows"
+  jq -e --arg t "$TASK" --arg re "$UUID_RE" \
+    '.v == 1 and (.ts | type) == "number" and .task == $t and .harness == "claude" and .project == "sample" and (.session_id | test($re))' \
+    <<< "$row" >/dev/null || fail "task.session row has the wrong shape: $row"
+  id=$(jq -r .session_id <<< "$row")
+  assert_contains "$(cat "$LAUNCH_LOG")" "--session-id $id " "the launch did not hand the recorded id to claude"
+  assert_equals '["task.dispatched","task.session"]' "$(jq -c -s '[.[].event]' "$HOME_DIR/state/fleet-ledger.jsonl")" \
+    "the session record follows the dispatch record"
+  pass "claude spawn: the launch names a fresh session id and exactly that id is recorded right after task.dispatched"
+}
+
+test_pi_spawn_records_the_session_when_pi_advertises_it() {
+  local out row id
+  make_case session-pi on
+  printf 'pi\n' > "$HOME_DIR/config/crew-harness"
+  fake_pi "$FAKEBIN" with-session-id
+  out=$(spawn_logged) || fail "spawn failed: $out"
+  row=$(session_rows)
+  jq -e --arg re "$UUID_RE" '.harness == "pi" and .project == "sample" and (.session_id | test($re))' <<< "$row" >/dev/null \
+    || fail "task.session row has the wrong shape: $row"
+  id=$(jq -r .session_id <<< "$row")
+  assert_contains "$(cat "$LAUNCH_LOG")" " --session-id $id " "the launch did not hand the recorded id to pi"
+  pass "pi spawn: a Pi advertising --session-id is launched with and recorded under its session id"
+}
+
+test_pi_without_session_id_support_records_nothing() {
+  local out
+  make_case session-pi-old on
+  printf 'pi\n' > "$HOME_DIR/config/crew-harness"
+  fake_pi "$FAKEBIN" without
+  out=$(spawn_logged) || fail "spawn failed: $out"
+  assert_equals "" "$(session_rows)" "task.session rows for a Pi that cannot take a session id"
+  assert_not_contains "$(cat "$LAUNCH_LOG")" "--session-id" "the launch passed a flag the Pi does not advertise"
+  pass "pi spawn: a Pi without --session-id launches as before and writes no task.session"
+}
+
+test_other_harness_records_no_session() {
+  local out
+  make_case session-codex on
+  printf 'codex\n' > "$HOME_DIR/config/crew-harness"
+  fm_fake_exit0 "$FAKEBIN" codex
+  out=$(spawn_logged) || fail "spawn failed: $out"
+  assert_equals "" "$(session_rows)" "task.session rows for a harness whose session id is unknown"
+  assert_not_contains "$(cat "$LAUNCH_LOG")" "--session-id" "the launch gained a session flag"
+  pass "other harness: no session id is learnable, so nothing is recorded and the launch is unchanged"
+}
+
+test_flag_off_launch_has_no_session_id() {
+  local out
+  make_case session-off off
+  out=$(spawn_logged) || fail "spawn failed: $out"
+  assert_not_contains "$(cat "$LAUNCH_LOG")" "--session-id" "a launch with the ledger off gained a session flag"
+  pass "flag off: the claude launch is unchanged"
+}
+
+test_relaunch_records_the_replacement_session() {
+  local out first second
+  make_case session-relaunch on
+  out=$(spawn_logged) || fail "spawn failed: $out"
+  # The first agent has exited: the pane is a bare shell, which a relaunch requires.
+  mv "$FAKEBIN/tmux" "$FAKEBIN/tmux.base"
+  cat > "$FAKEBIN/tmux" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *pane_current_command*) printf 'zsh\n'; exit 0 ;;
+esac
+exec "$(dirname "$0")/tmux.base" "$@"
+SH
+  chmod +x "$FAKEBIN/tmux"
+  out=$(FM_FAKE_DUPLICATE_WINDOW="fm-$TASK" FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" in_home "$ROOT/bin/fm-spawn.sh" "$TASK" --relaunch 2>&1) \
+    || fail "relaunch failed: $out"
+  assert_equals 2 "$(session_rows | grep -c .)" "task.session rows after a relaunch"
+  first=$(session_rows | sed -n 1p | jq -r .session_id)
+  second=$(session_rows | sed -n 2p | jq -r .session_id)
+  [ "$first" != "$second" ] || fail "the relaunch recorded the old session id again"
+  assert_equals 1 "$(jq -c 'select(.event == "task.dispatched")' "$HOME_DIR/state/fleet-ledger.jsonl" | grep -c .)" \
+    "dispatched rows after a relaunch"
+  assert_contains "$(cat "$LAUNCH_LOG")" "--session-id $second " "the relaunch did not hand its new id to claude"
+  pass "relaunch: the replacement session is recorded once, under a new id, with no second dispatch"
+}
+
+test_ledger_failure_does_not_fail_the_spawn() {
+  local out
+  make_case session-ledger-fails on
+  mkdir -p "$HOME_DIR/state/fleet-ledger.jsonl"
+  out=$(spawn_logged) || fail "a ledger failure failed the spawn: $out"
+  assert_contains "$(cat "$LAUNCH_LOG")" "--session-id " "the launch lost its session flag"
+  pass "ledger failing: the spawn still succeeds"
+}
+
+test_session_command_arguments() {
+  local out rc bad
+  make_case session-args on
+  out=$(in_home "$ROOT/bin/fm-fleet-ledger.sh" session "$TASK" claude 3f2b9c1e-0000-4000-8000-00000000a001 "" 2>&1) \
+    || fail "session with an empty project failed: $out"
+  assert_equals '["task.session","'"$TASK"'","claude","3f2b9c1e-0000-4000-8000-00000000a001",null]' \
+    "$(jq -c '[.event, .task, .harness, .session_id, .project]' "$HOME_DIR/state/fleet-ledger.jsonl")" "row for an empty project"
+  for bad in "$TASK claude ''" "$TASK '' abc" ".bad claude abc" "$TASK claude a/b"; do
+    rc=0
+    eval "in_home \"\$ROOT/bin/fm-fleet-ledger.sh\" session $bad p" >/dev/null 2>&1 || rc=$?
+    assert_equals 2 "$rc" "usage status for session $bad"
+  done
+  assert_equals 1 "$(wc -l < "$HOME_DIR/state/fleet-ledger.jsonl" | tr -d ' ')" "rows after refused session commands"
+  pass "session command: an empty project is null and an empty harness or id, a bad task, or an unsafe id is a usage error"
+}
+
 test_flag_on_records_the_task_lifecycle
 test_flag_on_records_a_pr_merge_once
 test_flag_on_records_a_pr_registration
@@ -285,3 +409,11 @@ test_worker_status_command_fails_when_the_append_fails
 test_worker_status_line_lands_when_the_ledger_fails
 test_worker_status_line_with_the_flag_absent
 test_flag_off_writes_nothing
+test_claude_spawn_records_the_session_it_launched_with
+test_pi_spawn_records_the_session_when_pi_advertises_it
+test_pi_without_session_id_support_records_nothing
+test_other_harness_records_no_session
+test_flag_off_launch_has_no_session_id
+test_relaunch_records_the_replacement_session
+test_ledger_failure_does_not_fail_the_spawn
+test_session_command_arguments

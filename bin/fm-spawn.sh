@@ -432,6 +432,12 @@
 #                  reports (relaunch_resume_args below owns it; it supplies its
 #                  own leading space, and is empty on every fresh spawn and for
 #                  every other harness)
+#     __SESSIONIDFLAG__ / __PISESSIONID__ the claude / pi `--session-id <uuid>`
+#                  that names the launch's own session for the fleet ledger's
+#                  task.session record (docs/fleet-ledger.md); each supplies its
+#                  own spacing, and both are empty unless the ledger is on, the
+#                  harness is claude or pi (Pi advertising the flag), and no
+#                  Pi resume reference is passed
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
 #                  turn-end signal rides the launch command, e.g. codex -c notify=[...])
 #     __PIEXT__    absolute path to state/<task-id>.pi-ext.ts (pi turn-end extension,
@@ -2019,6 +2025,28 @@ pi_supports_tui_mode() {
   printf '%s\n' "$help" | grep -Eq -- '(^|[[:space:]])--tui-mode([[:space:]=]|$)'
 }
 
+# Pi's --session-id (Pi 1.3.0) lets the launch name its own session, so the
+# ledger's task.session record carries an id firstmate assigned rather than one
+# it guessed. An absent or inconclusive probe omits the flag and the record.
+pi_supports_session_id() {
+  local executable=$1 help
+  help=$("$executable" --help 2>&1) || return 1
+  printf '%s\n' "$help" | grep -Eq -- '(^|[[:space:]])--session-id([[:space:]=]|$)'
+}
+
+# new_session_id: a fresh lowercase UUID on stdout, or failure.
+new_session_id() {
+  local id
+  id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null) || id=$(uuidgen 2>/dev/null) || return 1
+  id=$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')
+  case "$id" in
+  ????????-????-????-????-????????????) ;;
+  *) return 1 ;;
+  esac
+  case "$id" in *[!0-9a-f-]*) return 1 ;; esac
+  printf '%s\n' "$id"
+}
+
 # omp pre-launch model validation. `omp models --json` (omp 18.1.11) prints
 # {"models":[{"provider","id","selector":"<provider>/<id>",...}]} for built-in and
 # auto-discovered providers only; it never lists a provider an extension
@@ -2138,7 +2166,7 @@ launch_template() {
     # record-backed doorbell: the full envelope is published into the receiving
     # home's state/operational-inbox before launch and only a printable doorbell
     # naming it is passed. A record that cannot be published stops the spawn.
-    printf '%s' '__MODELFLAG____EFFORTFLAG____BRIEFDOORBELL__'
+    printf '%s' '__SESSIONIDFLAG____MODELFLAG____EFFORTFLAG____BRIEFDOORBELL__'
     ;;
   # --disable hooks (equivalent to -c features.hooks=false) turns codex's whole
   # lifecycle-hook layer off for CREWMATE and SCOUT launches only.
@@ -2171,7 +2199,7 @@ launch_template() {
     ;;
   opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}__EFFORTFLAG__}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
   pi | pi-signed)
-    printf '%s' '__PIBIN____PITUIMODE____PIRESUME__'
+    printf '%s' '__PIBIN____PITUIMODE____PIRESUME____PISESSIONID__'
     if [ "$kind" = secondmate ]; then
       printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
     else
@@ -5634,6 +5662,32 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RESUME_ARGS=$(relaunch_resume_args "$HARNESS" "$BACKEND" "$T") || RESUME_ARGS=
 fi
 LAUNCH=${LAUNCH//__PIRESUME__/$RESUME_ARGS}
+# Fleet-ledger task.session (docs/fleet-ledger.md): with the ledger on, a claude
+# or pi launch is told its own session id, so the record names an id the harness
+# was handed and never one read back from a guess. A resumed Pi session keeps
+# its id and needs no new record; every other harness gets no flag and no record.
+SESSION_ID=
+SESSION_ID_FLAG=
+if [ -e "$CONFIG/fleet-ledger" ] && [ -z "$RESUME_ARGS" ]; then
+  case "$HARNESS" in
+  claude)
+    if SESSION_ID=$(new_session_id); then
+      SESSION_ID_FLAG="--session-id $SESSION_ID "
+    else
+      SESSION_ID=
+    fi
+    ;;
+  pi)
+    if pi_supports_session_id "$PI_BIN" && SESSION_ID=$(new_session_id); then
+      SESSION_ID_FLAG=" --session-id $SESSION_ID"
+    else
+      SESSION_ID=
+    fi
+    ;;
+  esac
+fi
+LAUNCH=${LAUNCH//__SESSIONIDFLAG__/$SESSION_ID_FLAG}
+LAUNCH=${LAUNCH//__PISESSIONID__/$SESSION_ID_FLAG}
 LAUNCH=${LAUNCH//__CLAUDEPERMFLAG__/$CLAUDE_PERM_FLAG}
 if [ "$KEEP_AI_TRAILERS" = 1 ]; then
   LAUNCH=${LAUNCH//__CLAUDEATTRIBUTION__/}
@@ -6156,4 +6210,5 @@ SPAWN_ACCOUNT=
 [ -z "$WORKER_ACCOUNT_PROVIDER" ] || SPAWN_ACCOUNT="$SPAWN_ACCOUNT account_provider=$WORKER_ACCOUNT_PROVIDER"
 # Opt-in fleet activity ledger (docs/fleet-ledger.md); off costs one file test.
 [ ! -e "$CONFIG/fleet-ledger" ] || [ "$RELAUNCH" -eq 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" dispatched "$ID" "$KIND" "${PROJ_ABS##*/}" "$HARNESS" "$MODEL" || true
+[ ! -e "$CONFIG/fleet-ledger" ] || [ -z "$SESSION_ID" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" session "$ID" "$HARNESS" "$SESSION_ID" "${PROJ_ABS##*/}" || true
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$SPAWN_ACCOUNT"
