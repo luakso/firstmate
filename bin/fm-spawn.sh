@@ -5668,7 +5668,7 @@ LAUNCH=${LAUNCH//__PIRESUME__/$RESUME_ARGS}
 # its id and needs no new record; every other harness gets no flag and no record.
 SESSION_ID=
 SESSION_ID_FLAG=
-if [ -e "$CONFIG/fleet-ledger" ] && [ -z "$RESUME_ARGS" ]; then
+if [ "$RAW_LAUNCH" -eq 0 ] && [ -e "$CONFIG/fleet-ledger" ] && [ -z "$RESUME_ARGS" ]; then
   case "$HARNESS" in
   claude)
     if SESSION_ID=$(new_session_id); then

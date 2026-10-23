@@ -340,6 +340,18 @@ test_other_harness_records_no_session() {
   pass "other harness: no session id is learnable, so nothing is recorded and the launch is unchanged"
 }
 
+test_raw_launch_records_no_session() {
+  local out
+  make_case session-raw on
+  fm_fake_exit0 "$FAKEBIN" claude
+  : > "$LAUNCH_LOG"
+  out=$(FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" in_home "$ROOT/bin/fm-spawn.sh" "$TASK" "$PROJ_DIR" 'claude --foo' --mode local-only --yolo off 2>&1) \
+    || fail "spawn failed: $out"
+  assert_equals "" "$(session_rows)" "task.session rows for a raw launch command"
+  assert_not_contains "$(cat "$LAUNCH_LOG")" "--session-id" "a raw launch gained a session flag"
+  pass "raw launch: no session id is handed to the harness, so none is recorded"
+}
+
 test_flag_off_launch_has_no_session_id() {
   local out
   make_case session-off off
@@ -413,6 +425,7 @@ test_claude_spawn_records_the_session_it_launched_with
 test_pi_spawn_records_the_session_when_pi_advertises_it
 test_pi_without_session_id_support_records_nothing
 test_other_harness_records_no_session
+test_raw_launch_records_no_session
 test_flag_off_launch_has_no_session_id
 test_relaunch_records_the_replacement_session
 test_ledger_failure_does_not_fail_the_spawn
