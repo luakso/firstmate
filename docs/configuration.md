@@ -939,6 +939,8 @@ Supported limits:
 
 `bin/fm-spawn.sh` reads the file on every spawn and relaunch, so a change reaches the next launch without a restart.
 Like `config/claude-permission-mode`, it is a captain-wide safety preference inherited into secondmate homes, so a secondmate's own Claude crewmates and scouts are fenced too while the secondmate itself is not: it must still reach its runtime backend and write its own home's state.
+A secondmate home can keep its own deliberately chosen value by creating the empty local file `config/claude-sandbox.own` in that home: inherited-config propagation (spawn, bootstrap, and `bin/fm-config-push.sh`) then leaves that home's `config/claude-sandbox` untouched and reports the item as skipped with the reason "held by this home's own choice".
+Without the marker the primary value converges as before; remove the marker to rejoin the primary, and no other inherited item has this opt-out.
 
 ## Container runtime (config/container)
 
