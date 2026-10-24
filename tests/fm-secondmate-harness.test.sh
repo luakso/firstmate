@@ -1541,6 +1541,42 @@ test_claude_sandbox_inheritance_present_and_absent() {
   pass "B12c claude-sandbox inheritance: present values and primary absence converge exactly"
 }
 
+# A home's own config/claude-sandbox.own marker holds its claude-sandbox value
+# through bootstrap convergence and fm-config-push; without it the primary wins.
+test_claude_sandbox_own_marker_holds_value() {
+  local w head out err status
+  w=$(new_world sandbox-own)
+  head=$(git -C "$w/main" rev-parse HEAD)
+  add_sm_worktree "$w" sm "$head"
+  err="$w/sandbox-own.err"
+
+  printf 'on\n' > "$w/home/config/claude-sandbox"
+  mkdir -p "$w/sm/config"
+  printf 'off\n' > "$w/sm/config/claude-sandbox"
+  : > "$w/sm/config/claude-sandbox.own"
+
+  out=$(run_config_push "$w" 2>"$err"); status=$?
+  expect_code 0 "$status" "claude-sandbox held push should succeed"
+  assert_contains "$out" "claude-sandbox: skipped" "held item should report skipped"
+  assert_contains "$out" "held by this home's own choice" "held item should say why"
+  [ "$(cat "$w/sm/config/claude-sandbox")" = off ] || fail "push overwrote a held claude-sandbox"
+
+  run_bootstrap "$w" >/dev/null 2>&1 || true
+  [ "$(cat "$w/sm/config/claude-sandbox")" = off ] || fail "bootstrap overwrote a held claude-sandbox"
+
+  rm -f "$w/home/config/claude-sandbox"
+  out=$(run_config_push "$w" 2>"$err"); status=$?
+  expect_code 0 "$status" "claude-sandbox held absence push should succeed"
+  [ "$(cat "$w/sm/config/claude-sandbox")" = off ] || fail "primary absence cleared a held claude-sandbox"
+
+  printf 'on\n' > "$w/home/config/claude-sandbox"
+  rm -f "$w/sm/config/claude-sandbox.own"
+  out=$(run_config_push "$w" 2>"$err"); status=$?
+  expect_code 0 "$status" "claude-sandbox released push should succeed"
+  [ "$(cat "$w/sm/config/claude-sandbox")" = on ] || fail "without the marker the primary value should converge"
+  pass "B12d claude-sandbox.own marker holds the home's value through push and bootstrap; removing it converges again"
+}
+
 test_backend_inheritance_present_and_absent() {
   local w head out err status instruction
   w=$(new_world backend-inherit)
@@ -2744,6 +2780,7 @@ test_spawn_secondmate_claude_permission_mode_auto
 test_spawn_secondmate_claude_grants_parent_inbox_dir
 test_claude_permission_mode_inheritance_present_and_absent
 test_claude_sandbox_inheritance_present_and_absent
+test_claude_sandbox_own_marker_holds_value
 test_presentation_inheritance_default_on_and_opt_out
 test_bootstrap_sweep_surfaces_config_propagation_failure
 test_bootstrap_rereads_after_partial_propagation

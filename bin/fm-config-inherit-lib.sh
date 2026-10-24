@@ -25,6 +25,11 @@
 # secondmate's own claude crewmates launch on the same permission posture.
 # Primary config/claude-sandbox is the same kind of captain-wide safety
 # preference, so a secondmate's own claude crewmates and scouts are fenced too.
+# A home may deliberately keep its OWN claude-sandbox value by creating the empty
+# local marker file config/claude-sandbox.own in that home: propagation then
+# leaves the home's claude-sandbox untouched (present, absent, or differing) and
+# reports it as skipped with a reason. No other item has this opt-out, and
+# without the marker the primary value converges exactly as before.
 # Primary config/keep-ai-trailers is a home-wide commit-attribution choice, so
 # a secondmate's own crewmates keep AI co-author trailers too.
 # It also pushes
@@ -220,6 +225,12 @@ record_inheritable_config_result() {
   local item=$1 status=$2 reason=${3:-}
   [ -n "${FM_CONFIG_INHERIT_REPORT:-}" ] || return 0
   printf '%s\t%s\t%s\n' "$item" "$status" "$reason" >> "$FM_CONFIG_INHERIT_REPORT" 2>/dev/null || true
+}
+
+# Only claude-sandbox can be held by a home's own choice: a regular marker file
+# config/claude-sandbox.own in the destination config dir.
+destination_holds_own_item() {  # <dest-config-dir> <item>
+  [ "$2" = claude-sandbox ] && [ -f "$1/claude-sandbox.own" ]
 }
 
 inheritable_config_skip_reason() {
@@ -566,6 +577,12 @@ propagate_inheritable_config() {
     fi
     src="$src_config/$item"
     dest="$dest_config/$item"
+    if destination_holds_own_item "$dest_config" "$item"; then
+      reason="held by this home's own choice (config/$item.own)"
+      echo "fm-config-inherit: note: left $item for $dest_config unchanged: $reason" >&2
+      record_inheritable_config_result "$item" skipped "$reason"
+      continue
+    fi
     if ! source_present=$(fm_config_source_present "$src"); then
       reason="cannot inspect primary source"
       warn_inheritable_config_error "$item" "$src" "$reason"
