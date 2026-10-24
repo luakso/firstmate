@@ -13,7 +13,9 @@
 #                                right after its unchanged plain append)
 #   bin/fm-container-deliver.sh  appended (the host-delivery outcome it writes
 #                                to a contained ship's status)
-#   bin/fm-spawn.sh              dispatched (fresh spawns only, never relaunch)
+#   bin/fm-spawn.sh              dispatched (fresh spawns only, never relaunch),
+#                                session (a claude or pi launch whose session id
+#                                firstmate assigned itself, fresh or relaunch)
 #   bin/fm-watch.sh              capture, once per poll cycle
 #   bin/fm-pr-check.sh           pr_ready (a PR registered for review, not the
 #                                merge-time re-record from bin/fm-pr-merge.sh)
@@ -23,6 +25,7 @@
 #
 # Usage:
 #   fm-fleet-ledger.sh dispatched <task> <kind> <project> <harness> <model>
+#   fm-fleet-ledger.sh session <task> <harness> <session-id> <project>
 #   fm-fleet-ledger.sh pr_ready <task> <url>
 #   fm-fleet-ledger.sh merged <task> pr <url>
 #   fm-fleet-ledger.sh merged <task> local
@@ -67,7 +70,7 @@ LOCK="$STATE/.fleet-ledger.lock"
 TEXT_MAX_CHARS=2000
 
 usage() {
-  echo "usage: fm-fleet-ledger.sh dispatched <task> <kind> <project> <harness> <model> | pr_ready <task> <url> | merged <task> pr <url> | merged <task> local | cleaned_up <task> | capture | appended <config> <state>/<task>.status" >&2
+  echo "usage: fm-fleet-ledger.sh dispatched <task> <kind> <project> <harness> <model> | session <task> <harness> <session-id> <project> | pr_ready <task> <url> | merged <task> pr <url> | merged <task> local | cleaned_up <task> | capture | appended <config> <state>/<task>.status" >&2
   exit 2
 }
 
@@ -78,6 +81,10 @@ task_ok() {
 cmd=${1:-}
 case "$cmd" in
   dispatched) { [ "$#" -eq 6 ] && task_ok "$2"; } || usage ;;
+  session)
+    { [ "$#" -eq 5 ] && task_ok "$2" && [ -n "$3" ] && [ -n "$4" ]; } || usage
+    case "$4" in *[!A-Za-z0-9._-]*) usage ;; esac
+    ;;
   pr_ready) { [ "$#" -eq 3 ] && task_ok "$2" && [ -n "$3" ]; } || usage ;;
   merged)
     task_ok "${2:-}" || usage
@@ -213,6 +220,10 @@ case "$cmd" in
     append task.dispatched "$2" \
       '{kind: ($kind | n), project: ($project | n), harness: ($harness | n), model: ($model | n)}' \
       --arg kind "$3" --arg project "$4" --arg harness "$5" --arg model "$6" || rc=1
+    ;;
+  session)
+    append task.session "$2" '{harness: $harness, session_id: $session_id, project: ($project | n)}' \
+      --arg harness "$3" --arg session_id "$4" --arg project "$5" || rc=1
     ;;
   pr_ready)
     capture_task "$2" || rc=1
